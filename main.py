@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, NamedTuple
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -21,6 +21,7 @@ DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "gateway.db"
 LEGACY_STATE_PATH = DATA_DIR / "state.json"
 ADMIN_TOKEN_PATH = DATA_DIR / "admin_token.txt"
+MANAGEMENT_HTML_PATH = APP_DIR / "management.html"
 
 DEFAULT_UPSTREAM_URL = "https://new.sharedchat.cc/codex/v1/responses"
 TIMEOUT = httpx.Timeout(300.0, connect=10.0)
@@ -979,251 +980,6 @@ async def _raw_sse_bytes(result: StreamResult) -> AsyncIterator[bytes]:
         await _close_upstream_stream(result.stream_context)
 
 
-def _message_content_to_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        texts = []
-        for part in content:
-            if isinstance(part, dict):
-                part_type = part.get("type")
-                if part_type in {"text", "input_text", "output_text"}:
-                    texts.append(str(part.get("text", "")))
-        return "\n".join(text for text in texts if text)
-    return json.dumps(content, ensure_ascii=False)
-
-
-def _chat_content_to_response_parts(content: Any, role: str) -> list[dict[str, Any]]:
-    text_type = "output_text" if role == "assistant" else "input_text"
-
-    if content is None:
-        return [{"type": text_type, "text": ""}]
-    if isinstance(content, str):
-        return [{"type": text_type, "text": content}]
-    if not isinstance(content, list):
-        return [{"type": text_type, "text": json.dumps(content, ensure_ascii=False)}]
-
-    parts: list[dict[str, Any]] = []
-    for part in content:
-        if not isinstance(part, dict):
-            continue
-
-        part_type = part.get("type")
-        if part_type in {"text", "input_text", "output_text"}:
-            parts.append({"type": text_type, "text": str(part.get("text", ""))})
-        elif part_type == "image_url" and role == "user":
-            image_url = part.get("image_url")
-            if isinstance(image_url, dict):
-                image_url = image_url.get("url")
-            if image_url:
-                parts.append({"type": "input_image", "image_url": image_url})
-        elif part_type == "input_image" and role == "user" and part.get("image_url"):
-            parts.append({"type": "input_image", "image_url": part["image_url"]})
-
-    if not parts:
-        parts.append({"type": text_type, "text": ""})
-    return parts
-
-
-def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
-    messages = chat_body.get("messages")
-    if not isinstance(messages, list):
-        raise GatewayError("messages must be an array", 400, "invalid_messages", param="messages")
-
-    instructions: list[str] = []
-    input_items: list[dict[str, Any]] = []
-
-    for message in messages:
-        if not isinstance(message, dict):
-            raise GatewayError("Each message must be an object", 400, "invalid_messages", param="messages")
-
-        role = message.get("role")
-        content = message.get("content")
-        if role in {"system", "developer"}:
-            text = _message_content_to_text(content)
-            if text:
-                instructions.append(text)
-        elif role in {"user", "assistant"}:
-            input_items.append(
-                {
-                    "role": role,
-                    "content": _chat_content_to_response_parts(content, role),
-                }
-            )
-        elif role == "tool":
-            input_items.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": _message_content_to_text(content)}],
-                }
-            )
-        else:
-            raise GatewayError("Unsupported message role", 400, "unsupported_message_role", param="messages.role")
-
-    body: dict[str, Any] = {
-        "model": chat_body.get("model", "gpt-5.5"),
-        "input": input_items,
-        "stream": bool(chat_body.get("stream", False)),
-    }
-
-    if instructions:
-        body["instructions"] = "\n\n".join(instructions)
-
-    passthrough_fields = (
-        "temperature",
-        "top_p",
-        "frequency_penalty",
-        "presence_penalty",
-        "parallel_tool_calls",
-        "reasoning",
-        "text",
-        "tools",
-        "tool_choice",
-        "store",
-        "previous_response_id",
-        "service_tier",
-        "truncation",
-        "top_logprobs",
-        "client_metadata",
-    )
-    for field in passthrough_fields:
-        if field in chat_body:
-            body[field] = chat_body[field]
-
-    if "max_completion_tokens" in chat_body:
-        body["max_output_tokens"] = chat_body["max_completion_tokens"]
-    elif "max_tokens" in chat_body:
-        body["max_output_tokens"] = chat_body["max_tokens"]
-
-    return body
-
-
-def _extract_response_text(response_body: dict[str, Any]) -> str:
-    texts: list[str] = []
-
-    for item in response_body.get("output", []) or []:
-        if not isinstance(item, dict):
-            continue
-        for content in item.get("content", []) or []:
-            if isinstance(content, dict) and content.get("type") in {"output_text", "text"}:
-                texts.append(str(content.get("text", "")))
-
-    if texts:
-        return "".join(texts)
-
-    output_text = response_body.get("output_text")
-    if isinstance(output_text, str):
-        return output_text
-
-    return ""
-
-
-def _responses_to_chat_completion(response_body: dict[str, Any], model: str) -> dict[str, Any]:
-    response_id = response_body.get("id") or f"chatcmpl-{uuid.uuid4().hex}"
-    status = response_body.get("status")
-    finish_reason = "stop" if status in {None, "completed"} else status
-
-    return {
-        "id": response_id,
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": response_body.get("model") or model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": _extract_response_text(response_body),
-                },
-                "finish_reason": finish_reason,
-            }
-        ],
-        "usage": response_body.get("usage"),
-    }
-
-
-def _chat_stream_chunk(
-    stream_id: str,
-    created: int,
-    model: str,
-    delta: dict[str, Any],
-    finish_reason: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "id": stream_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
-            }
-        ],
-    }
-
-
-async def _chat_completion_sse(result: StreamResult, model: str) -> AsyncIterator[str]:
-    stream_id = f"chatcmpl-{uuid.uuid4().hex}"
-    created = int(time.time())
-    saw_error = False
-    success = False
-
-    try:
-        first_chunk = _chat_stream_chunk(stream_id, created, model, {"role": "assistant"})
-        yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
-
-        data_lines: list[str] = []
-        async for line in result.response.aiter_lines():
-            if line == "":
-                if data_lines:
-                    raw_data = "\n".join(data_lines)
-                    data_lines = []
-                    if raw_data == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(raw_data)
-                    except json.JSONDecodeError:
-                        continue
-
-                    if event.get("type") == "response.output_text.delta":
-                        delta = event.get("delta") or ""
-                        if delta:
-                            chunk = _chat_stream_chunk(stream_id, created, model, {"content": delta})
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                    elif event.get("type") == "response.error":
-                        saw_error = True
-                        error = event.get("error") or {}
-                        message = error.get("message") if isinstance(error, dict) else None
-                        if message:
-                            chunk = _chat_stream_chunk(stream_id, created, model, {"content": message})
-                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                continue
-
-            if line.startswith("data:"):
-                data_lines.append(line[5:].lstrip())
-
-        final_chunk = _chat_stream_chunk(stream_id, created, model, {}, "stop")
-        yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-        success = not saw_error
-    except Exception:
-        latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True)
-        raise
-    finally:
-        if success:
-            latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-            _record_channel_result(result.channel["id"], True, result.response.status_code, None, latency_ms, False)
-        elif saw_error:
-            latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-            _record_channel_result(result.channel["id"], False, result.response.status_code, "response_error", latency_ms, True)
-        await _close_upstream_stream(result.stream_context)
-
-
 async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
     state = _get_gateway_state()
     body = _ensure_client_metadata(request, body, state)
@@ -1265,6 +1021,16 @@ async def health():
     }
 
 
+@app.get("/management.html", include_in_schema=False)
+async def management_html():
+    return FileResponse(MANAGEMENT_HTML_PATH)
+
+
+@app.get("/", include_in_schema=False)
+async def management_root():
+    return FileResponse(MANAGEMENT_HTML_PATH)
+
+
 @app.get("/v1/config")
 async def config():
     with _connect_db() as conn:
@@ -1296,67 +1062,6 @@ async def proxy_responses(request: Request):
     try:
         body = await _read_json_body(request)
         return await _post_responses(request, body)
-    except GatewayError as exc:
-        return _gateway_error_response(exc)
-
-
-@app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
-    try:
-        chat_body = await _read_json_body(request)
-        responses_body = _chat_to_responses_body(chat_body)
-        responses_body = _ensure_client_metadata(request, responses_body, _get_gateway_state())
-
-        if responses_body.get("stream") is True:
-            stream_result = await _open_stream_with_failover(request, responses_body)
-            if isinstance(stream_result, JSONResponse):
-                return stream_result
-            return StreamingResponse(
-                _chat_completion_sse(stream_result, responses_body["model"]),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    **_trace_headers(stream_result.response),
-                    **_channel_response_headers(stream_result.channel, stream_result.failover_count),
-                },
-            )
-
-        upstream = await _post_upstream_with_failover(request, responses_body)
-        channel_headers = _channel_response_headers(upstream.channel, upstream.failover_count)
-        if upstream.response.status_code >= 400:
-            return _json_response_from_upstream(upstream.response, channel_headers)
-        if not upstream.response.content:
-            return _error_response(
-                "Upstream returned an empty response",
-                502,
-                "upstream_empty_response",
-                headers=channel_headers,
-            )
-        if "application/json" not in upstream.response.headers.get("content-type", "").lower():
-            return _json_response_from_upstream(upstream.response, channel_headers)
-
-        try:
-            responses_json = upstream.response.json()
-        except json.JSONDecodeError:
-            return _error_response(
-                "Upstream returned invalid JSON",
-                502,
-                "upstream_invalid_json",
-                headers=_merge_headers(_trace_headers(upstream.response), channel_headers),
-            )
-        if not isinstance(responses_json, dict):
-            return _error_response(
-                "Upstream JSON response must be an object",
-                502,
-                "upstream_invalid_response",
-                headers=channel_headers,
-            )
-        return JSONResponse(
-            content=_responses_to_chat_completion(responses_json, responses_body["model"]),
-            headers=_merge_headers(_trace_headers(upstream.response), channel_headers),
-        )
     except GatewayError as exc:
         return _gateway_error_response(exc)
 

@@ -1,0 +1,1293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>codex2api 管理台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f4f1;
+      --surface: #ffffff;
+      --surface-soft: #fbfaf8;
+      --surface-warm: #f0e8df;
+      --line: #ded8cf;
+      --line-strong: #cfc6ba;
+      --text: #24211f;
+      --muted: #746d66;
+      --accent: #b86532;
+      --accent-strong: #9c4f25;
+      --green: #21765c;
+      --green-soft: #e5f4ed;
+      --red: #9a3636;
+      --red-soft: #f7e5e2;
+      --blue: #315e8b;
+      --blue-soft: #e8f0f8;
+      --amber: #8a6218;
+      --amber-soft: #f5ecd7;
+      --shadow: 0 12px 36px rgba(65, 55, 46, 0.08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-width: 320px; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: 0;
+    }
+
+    button, input, select, textarea {
+      font: inherit;
+      letter-spacing: 0;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      min-height: 36px;
+      padding: 0 12px;
+      cursor: pointer;
+      transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+    }
+
+    button:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      min-height: 36px;
+      padding: 7px 10px;
+      outline: none;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(184, 101, 50, 0.14);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 252px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.74);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 46px;
+      margin-bottom: 24px;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius);
+      background: var(--surface-warm);
+      color: var(--accent-strong);
+      font-weight: 800;
+    }
+
+    .brand-title {
+      font-size: 17px;
+      font-weight: 760;
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav-button {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 42px;
+      text-align: left;
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .nav-button:hover { background: var(--surface-soft); color: var(--text); }
+    .nav-button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    .nav-icon {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      font-weight: 800;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 26px 30px 36px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 27px;
+      line-height: 1.2;
+    }
+
+    .page-kicker {
+      color: var(--muted);
+      margin-top: 5px;
+    }
+
+    .connection {
+      display: grid;
+      grid-template-columns: 210px 220px auto auto auto;
+      align-items: end;
+      gap: 10px;
+      justify-content: end;
+    }
+
+    .field-label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .remember {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 36px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .remember input { width: 16px; height: 16px; min-height: 0; padding: 0; }
+
+    .primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+    .danger { color: var(--red); border-color: #e5c4bd; background: #fff9f8; }
+    .danger:hover { border-color: #d59c91; }
+    .ghost { background: transparent; }
+
+    .notice {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--muted);
+    }
+
+    .notice.show { display: flex; }
+    .notice.error { color: var(--red); border-color: #e5c4bd; background: var(--red-soft); }
+    .notice.success { color: var(--green); border-color: #b9decf; background: var(--green-soft); }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .metric {
+      min-height: 106px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    .metric-value {
+      font-size: 28px;
+      line-height: 1.1;
+      font-weight: 780;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-note {
+      color: var(--muted);
+      margin-top: 8px;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 58px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-title {
+      font-size: 16px;
+      font-weight: 740;
+    }
+
+    .panel-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .filter-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .chip.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .chip-count {
+      display: inline-grid;
+      place-items: center;
+      min-width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.08);
+      padding: 0 6px;
+      font-size: 12px;
+    }
+
+    .table-wrap { overflow: auto; }
+
+    table {
+      width: 100%;
+      min-width: 980px;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #eee9e3;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #ebe6df;
+      color: #5c554f;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+
+    tbody tr:hover { background: var(--surface-soft); }
+    tbody tr:last-child td { border-bottom: 0; }
+
+    .truncate {
+      max-width: 360px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border-radius: 999px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .ok { color: var(--green); background: var(--green-soft); }
+    .warn { color: var(--amber); background: var(--amber-soft); }
+    .bad { color: var(--red); background: var(--red-soft); }
+    .info { color: var(--blue); background: var(--blue-soft); }
+    .idle { color: var(--muted); background: #efebe6; }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      width: 42px;
+      height: 24px;
+      border-radius: 999px;
+      padding: 3px;
+      background: #d6d0c8;
+      border: 0;
+      vertical-align: middle;
+    }
+
+    .toggle::after {
+      content: "";
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+      transition: transform 0.16s ease;
+    }
+
+    .toggle.on { background: var(--accent); }
+    .toggle.on::after { transform: translateX(18px); }
+
+    .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: flex-end;
+      white-space: nowrap;
+    }
+
+    .row-actions button {
+      min-width: 36px;
+      padding: 0 9px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0;
+    }
+
+    .detail-item {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 12px;
+      padding: 13px 14px;
+      border-bottom: 1px solid #eee9e3;
+      min-width: 0;
+    }
+
+    .detail-item:nth-child(odd) { border-right: 1px solid #eee9e3; }
+    .detail-label { color: var(--muted); }
+    .detail-value { overflow-wrap: anywhere; }
+
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 12px;
+      padding: 14px;
+    }
+
+    .model-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 13px;
+      background: var(--surface-soft);
+    }
+
+    .model-id {
+      font-weight: 740;
+      overflow-wrap: anywhere;
+    }
+
+    .model-meta {
+      color: var(--muted);
+      margin-top: 8px;
+      font-size: 12px;
+    }
+
+    .empty {
+      padding: 26px 14px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    dialog {
+      width: min(640px, calc(100vw - 28px));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 0;
+      box-shadow: 0 24px 80px rgba(43, 34, 27, 0.24);
+    }
+
+    dialog::backdrop { background: rgba(38, 32, 27, 0.32); }
+
+    .dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .dialog-title { font-size: 17px; font-weight: 760; }
+    .dialog-body { padding: 16px; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 13px;
+    }
+
+    .form-grid .wide { grid-column: 1 / -1; }
+
+    .checkbox-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      color: var(--muted);
+    }
+
+    .checkbox-line input { width: 16px; height: 16px; min-height: 0; }
+
+    .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: var(--surface-soft);
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 1120px) {
+      .topbar { grid-template-columns: 1fr; }
+      .connection { justify-content: stretch; grid-template-columns: 1fr 1fr auto auto auto; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-item:nth-child(odd) { border-right: 0; }
+    }
+
+    @media (max-width: 820px) {
+      .app { display: block; }
+      .sidebar {
+        position: static;
+        height: auto;
+        padding: 14px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand { margin-bottom: 12px; }
+      .nav-group { display: flex; overflow-x: auto; padding-bottom: 2px; }
+      .nav-button { min-width: 126px; grid-template-columns: 22px 1fr; }
+      .nav-button .nav-count { display: none; }
+      .main { padding: 18px 14px 28px; }
+      .connection { grid-template-columns: 1fr; }
+      .toolbar { grid-template-columns: 1fr; }
+      .filter-row { justify-content: flex-start; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .panel-header { align-items: flex-start; flex-direction: column; }
+      .panel-actions { justify-content: flex-start; }
+      .detail-item { grid-template-columns: 1fr; gap: 4px; }
+      .form-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand" aria-label="codex2api">
+        <div class="brand-mark">C2</div>
+        <div>
+          <div class="brand-title">codex2api</div>
+          <div class="brand-subtitle">Gateway Management</div>
+        </div>
+      </div>
+      <nav class="nav-group" aria-label="主导航">
+        <button class="nav-button active" type="button" data-view="overview">
+          <span class="nav-icon">□</span><span>概览</span><span class="nav-count" id="navOverviewCount">-</span>
+        </button>
+        <button class="nav-button" type="button" data-view="channels">
+          <span class="nav-icon">≡</span><span>渠道</span><span class="nav-count" id="navChannelCount">-</span>
+        </button>
+        <button class="nav-button" type="button" data-view="models">
+          <span class="nav-icon">AI</span><span>模型</span><span class="nav-count" id="navModelCount">-</span>
+        </button>
+        <button class="nav-button" type="button" data-view="state">
+          <span class="nav-icon">⌁</span><span>网关状态</span><span class="nav-count" id="navStateCount">-</span>
+        </button>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">概览</h1>
+          <div class="page-kicker" id="pageKicker">Codex Responses 网关运行状态</div>
+        </div>
+        <div class="connection">
+          <label>
+            <span class="field-label">API Base URL</span>
+            <input id="apiBase" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            <span class="field-label">Admin Token</span>
+            <input id="adminToken" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="remember">
+            <input id="rememberToken" type="checkbox">
+            <span>本机保存</span>
+          </label>
+          <button id="applyConnection" type="button" class="primary">连接</button>
+          <button id="refreshAll" type="button">刷新</button>
+        </div>
+      </header>
+
+      <div class="notice" id="notice" role="status"></div>
+
+      <section class="view active" id="view-overview" aria-labelledby="pageTitle">
+        <div class="summary-grid" id="summaryGrid"></div>
+        <section class="panel">
+          <div class="panel-header">
+            <div class="panel-title">渠道健康</div>
+            <div class="panel-actions">
+              <button type="button" data-jump="channels">查看渠道</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>状态</th>
+                  <th>优先级</th>
+                  <th>24h 成功</th>
+                  <th>24h 失败</th>
+                  <th>连续失败</th>
+                  <th>冷却至</th>
+                </tr>
+              </thead>
+              <tbody id="overviewRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-channels" aria-labelledby="pageTitle">
+        <div class="toolbar">
+          <input id="channelSearch" placeholder="按名称或上游地址筛选" autocomplete="off">
+          <div class="filter-row" id="channelFilters"></div>
+        </div>
+        <section class="panel">
+          <div class="panel-header">
+            <div class="panel-title">渠道</div>
+            <div class="panel-actions">
+              <button type="button" data-action="reset-fingerprint" class="danger">重置指纹</button>
+              <button type="button" data-action="new-channel" class="primary">添加渠道</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>上游地址</th>
+                  <th>启用</th>
+                  <th>优先级</th>
+                  <th>密钥</th>
+                  <th>24h 成功率</th>
+                  <th>失败</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="channelRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-models" aria-labelledby="pageTitle">
+        <section class="panel">
+          <div class="panel-header">
+            <div class="panel-title">模型</div>
+            <div class="panel-actions">
+              <button type="button" data-action="refresh-models">刷新模型</button>
+            </div>
+          </div>
+          <div class="model-grid" id="modelGrid"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-state" aria-labelledby="pageTitle">
+        <section class="panel">
+          <div class="panel-header">
+            <div class="panel-title">网关状态</div>
+            <div class="panel-actions">
+              <button type="button" data-action="reset-fingerprint" class="danger">重置指纹</button>
+            </div>
+          </div>
+          <div class="detail-grid" id="stateDetails"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="channelDialog">
+    <form id="channelForm">
+      <div class="dialog-header">
+        <div class="dialog-title" id="dialogTitle">添加渠道</div>
+        <button type="button" class="ghost" data-action="close-dialog" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <label class="wide">
+            <span class="field-label">名称</span>
+            <input id="channelName" required maxlength="120" autocomplete="off">
+          </label>
+          <label class="wide">
+            <span class="field-label">上游地址</span>
+            <input id="channelUrl" required type="url" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            <span class="field-label">优先级</span>
+            <input id="channelPriority" required type="number" step="1" value="0">
+          </label>
+          <label>
+            <span class="field-label">状态</span>
+            <select id="channelEnabled">
+              <option value="true">启用</option>
+              <option value="false">禁用</option>
+            </select>
+          </label>
+          <label class="wide">
+            <span class="field-label">Downstream API Key</span>
+            <input id="channelKey" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="checkbox-line wide" id="clearKeyWrap">
+            <input id="clearChannelKey" type="checkbox">
+            <span>清除已保存密钥</span>
+          </label>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" data-action="close-dialog">取消</button>
+        <button type="submit" class="primary" id="saveChannel">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    (() => {
+      const storageKeys = {
+        apiBase: "codex2api.management.apiBase",
+        adminToken: "codex2api.management.adminToken"
+      };
+
+      const titles = {
+        overview: ["概览", "Codex Responses 网关运行状态"],
+        channels: ["渠道", "管理上游渠道、优先级、密钥与运行状态"],
+        models: ["模型", "当前网关暴露的 OpenAI 兼容模型"],
+        state: ["网关状态", "客户端指纹、会话与服务配置"]
+      };
+
+      const state = {
+        apiBase: initialBaseUrl(),
+        adminToken: localStorage.getItem(storageKeys.adminToken) || "",
+        rememberToken: Boolean(localStorage.getItem(storageKeys.adminToken)),
+        activeView: "overview",
+        health: null,
+        config: null,
+        models: [],
+        channels: [],
+        query: "",
+        filter: "all",
+        editingId: null,
+        busy: false
+      };
+
+      const dom = {};
+
+      document.addEventListener("DOMContentLoaded", init);
+
+      function initialBaseUrl() {
+        const saved = localStorage.getItem(storageKeys.apiBase);
+        if (saved) return saved;
+        if (location.protocol === "http:" || location.protocol === "https:") return location.origin;
+        return "http://localhost:8000";
+      }
+
+      function init() {
+        cacheDom();
+        dom.apiBase.value = state.apiBase;
+        dom.adminToken.value = state.adminToken;
+        dom.rememberToken.checked = state.rememberToken;
+        bindEvents();
+        render();
+        refreshAll();
+      }
+
+      function cacheDom() {
+        for (const id of [
+          "apiBase", "adminToken", "rememberToken", "applyConnection", "refreshAll", "notice",
+          "pageTitle", "pageKicker", "summaryGrid", "overviewRows", "channelSearch", "channelFilters",
+          "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
+          "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
+          "channelUrl", "channelPriority", "channelEnabled", "channelKey", "clearChannelKey", "clearKeyWrap",
+          "saveChannel"
+        ]) {
+          dom[id] = document.getElementById(id);
+        }
+      }
+
+      function bindEvents() {
+        document.querySelectorAll("[data-view]").forEach((button) => {
+          button.addEventListener("click", () => setView(button.dataset.view));
+        });
+
+        document.addEventListener("click", (event) => {
+          const actionButton = event.target.closest("[data-action]");
+          if (actionButton) handleAction(actionButton.dataset.action, actionButton.dataset.id);
+
+          const jumpButton = event.target.closest("[data-jump]");
+          if (jumpButton) setView(jumpButton.dataset.jump);
+
+          const filterButton = event.target.closest("[data-filter]");
+          if (filterButton) {
+            state.filter = filterButton.dataset.filter;
+            renderChannels();
+          }
+        });
+
+        dom.applyConnection.addEventListener("click", applyConnection);
+        dom.refreshAll.addEventListener("click", refreshAll);
+        dom.channelSearch.addEventListener("input", () => {
+          state.query = dom.channelSearch.value.trim().toLowerCase();
+          renderChannels();
+        });
+        dom.channelForm.addEventListener("submit", saveChannel);
+      }
+
+      function setView(view) {
+        state.activeView = view;
+        document.querySelectorAll(".view").forEach((section) => section.classList.remove("active"));
+        document.getElementById(`view-${view}`).classList.add("active");
+        document.querySelectorAll("[data-view]").forEach((button) => {
+          button.classList.toggle("active", button.dataset.view === view);
+        });
+        const [title, kicker] = titles[view] || titles.overview;
+        dom.pageTitle.textContent = title;
+        dom.pageKicker.textContent = kicker;
+      }
+
+      function applyConnection() {
+        state.apiBase = dom.apiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
+        state.adminToken = dom.adminToken.value.trim();
+        state.rememberToken = dom.rememberToken.checked;
+        localStorage.setItem(storageKeys.apiBase, state.apiBase);
+        if (state.rememberToken && state.adminToken) {
+          localStorage.setItem(storageKeys.adminToken, state.adminToken);
+        } else {
+          localStorage.removeItem(storageKeys.adminToken);
+        }
+        refreshAll();
+      }
+
+      async function refreshAll() {
+        setBusy(true);
+        showNotice("正在刷新", "");
+        const errors = [];
+
+        await Promise.all([
+          loadPublic("/health", (data) => { state.health = data; }, errors, "health"),
+          loadPublic("/v1/config", (data) => { state.config = data; }, errors, "config"),
+          loadPublic("/v1/models", (data) => { state.models = Array.isArray(data.data) ? data.data : []; }, errors, "models")
+        ]);
+
+        if (state.adminToken) {
+          try {
+            await loadChannels();
+          } catch (error) {
+            state.channels = [];
+            errors.push(`admin: ${error.message}`);
+          }
+        } else {
+          state.channels = [];
+        }
+
+        render();
+        setBusy(false);
+        if (errors.length) {
+          showNotice(errors.join("；"), "error");
+        } else if (!state.adminToken) {
+          showNotice("公开状态已加载；渠道管理需要 Admin Token", "");
+        } else {
+          showNotice("已刷新", "success");
+        }
+      }
+
+      async function loadPublic(path, assign, errors, label) {
+        try {
+          assign(await request(path));
+        } catch (error) {
+          errors.push(`${label}: ${error.message}`);
+        }
+      }
+
+      async function loadChannels() {
+        const data = await request("/admin/channels", { admin: true });
+        state.channels = Array.isArray(data.data) ? data.data : [];
+      }
+
+      async function request(path, options = {}) {
+        const headers = {};
+        const init = { method: options.method || "GET", headers };
+        if (options.body !== undefined) {
+          headers["Content-Type"] = "application/json";
+          init.body = JSON.stringify(options.body);
+        }
+        if (options.admin) {
+          if (!state.adminToken) throw new Error("缺少 Admin Token");
+          headers.Authorization = `Bearer ${state.adminToken}`;
+        }
+
+        const response = await fetch(`${state.apiBase}${path}`, init);
+        const text = await response.text();
+        let data = null;
+        if (text) {
+          try { data = JSON.parse(text); } catch (_) { data = text; }
+        }
+        if (!response.ok) {
+          const message = data?.error?.message || data?.message || text || response.statusText;
+          const error = new Error(message);
+          error.status = response.status;
+          error.data = data;
+          throw error;
+        }
+        return data;
+      }
+
+      function setBusy(value) {
+        state.busy = value;
+        dom.refreshAll.disabled = value;
+        dom.applyConnection.disabled = value;
+        dom.saveChannel.disabled = value;
+      }
+
+      function showNotice(message, type) {
+        dom.notice.textContent = message;
+        dom.notice.className = `notice show ${type || ""}`.trim();
+        if (type === "success") {
+          window.clearTimeout(showNotice.timer);
+          showNotice.timer = window.setTimeout(() => dom.notice.classList.remove("show"), 2400);
+        }
+      }
+
+      function render() {
+        setView(state.activeView);
+        const metrics = buildMetrics();
+        dom.navOverviewCount.textContent = state.health?.status || "-";
+        dom.navChannelCount.textContent = metrics.totalChannels;
+        dom.navModelCount.textContent = state.models.length;
+        dom.navStateCount.textContent = state.config?.version || "-";
+        renderSummary(metrics);
+        renderOverviewRows();
+        renderFilters(metrics);
+        renderChannels();
+        renderModels();
+        renderState();
+      }
+
+      function buildMetrics() {
+        const channels = state.channels;
+        const totalChannels = state.config?.channel_count ?? state.health?.channel_count ?? channels.length;
+        const enabledChannels = state.config?.enabled_channel_count ?? state.health?.enabled_channel_count ?? channels.filter((item) => item.enabled).length;
+        const total24h = sum(channels, "total_24h");
+        const success24h = sum(channels, "success_24h");
+        const failure24h = sum(channels, "failure_24h");
+        const successRate = total24h ? Math.round((success24h / total24h) * 1000) / 10 : 0;
+        const cooldown = channels.filter(isCoolingDown).length;
+        const disabled = channels.filter((item) => !item.enabled).length;
+        const keyed = channels.filter((item) => item.has_downstream_api_key).length;
+        return { totalChannels, enabledChannels, total24h, success24h, failure24h, successRate, cooldown, disabled, keyed };
+      }
+
+      function sum(items, key) {
+        return items.reduce((total, item) => total + Number(item[key] || 0), 0);
+      }
+
+      function renderSummary(metrics) {
+        const healthText = state.health?.status || "unknown";
+        dom.summaryGrid.innerHTML = [
+          metricHtml("服务状态", healthText, `数据库：${state.health?.database_path || "-"}`),
+          metricHtml("渠道", String(metrics.enabledChannels), `总数 ${metrics.totalChannels}，禁用 ${metrics.disabled}`),
+          metricHtml("24h 成功率", `${metrics.successRate}%`, `${metrics.success24h} 成功 / ${metrics.failure24h} 失败`),
+          metricHtml("冷却中", String(metrics.cooldown), `连续失败阈值 ${state.config?.failure_threshold ?? "-"}`)
+        ].join("");
+      }
+
+      function metricHtml(label, value, note) {
+        return `<div class="metric"><div class="metric-label">${escapeHtml(label)}</div><div class="metric-value">${escapeHtml(value)}</div><div class="metric-note">${escapeHtml(note)}</div></div>`;
+      }
+
+      function renderOverviewRows() {
+        if (!state.adminToken) {
+          dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">需要 Admin Token</td></tr>`;
+          return;
+        }
+        if (!state.channels.length) {
+          dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">暂无渠道</td></tr>`;
+          return;
+        }
+        dom.overviewRows.innerHTML = state.channels.slice(0, 8).map((channel) => `
+          <tr>
+            <td><strong>${escapeHtml(channel.name)}</strong></td>
+            <td>${statusHtml(channel)}</td>
+            <td>${escapeHtml(channel.priority)}</td>
+            <td>${escapeHtml(channel.success_24h ?? 0)}</td>
+            <td>${escapeHtml(channel.failure_24h ?? 0)}</td>
+            <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
+            <td>${escapeHtml(formatDate(channel.cooldown_until))}</td>
+          </tr>
+        `).join("");
+      }
+
+      function renderFilters(metrics) {
+        const filters = [
+          ["all", "全部", state.channels.length],
+          ["enabled", "启用", state.channels.filter((item) => item.enabled).length],
+          ["disabled", "禁用", metrics.disabled],
+          ["cooldown", "冷却", metrics.cooldown],
+          ["keyed", "有密钥", metrics.keyed]
+        ];
+        dom.channelFilters.innerHTML = filters.map(([key, label, count]) => `
+          <button type="button" class="chip ${state.filter === key ? "active" : ""}" data-filter="${key}">
+            <span>${label}</span><span class="chip-count">${count}</span>
+          </button>
+        `).join("");
+      }
+
+      function renderChannels() {
+        const metrics = buildMetrics();
+        renderFilters(metrics);
+
+        if (!state.adminToken) {
+          dom.channelRows.innerHTML = `<tr><td colspan="9" class="empty">需要 Admin Token</td></tr>`;
+          return;
+        }
+
+        const rows = state.channels.filter((channel) => {
+          const queryMatch = !state.query || `${channel.name} ${channel.upstream_url}`.toLowerCase().includes(state.query);
+          if (!queryMatch) return false;
+          if (state.filter === "enabled") return channel.enabled;
+          if (state.filter === "disabled") return !channel.enabled;
+          if (state.filter === "cooldown") return isCoolingDown(channel);
+          if (state.filter === "keyed") return channel.has_downstream_api_key;
+          return true;
+        });
+
+        if (!rows.length) {
+          dom.channelRows.innerHTML = `<tr><td colspan="9" class="empty">没有匹配渠道</td></tr>`;
+          return;
+        }
+
+        dom.channelRows.innerHTML = rows.map((channel) => {
+          const id = escapeHtml(channel.id);
+          const rate = Number(channel.success_rate_24h || 0);
+          return `
+            <tr>
+              <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono">${id}</div></td>
+              <td><div class="truncate" title="${escapeHtml(channel.upstream_url)}">${escapeHtml(channel.upstream_url)}</div></td>
+              <td><button type="button" class="toggle ${channel.enabled ? "on" : ""}" data-action="toggle-channel" data-id="${id}" aria-label="${channel.enabled ? "禁用" : "启用"}"></button></td>
+              <td>${escapeHtml(channel.priority)}</td>
+              <td>${channel.has_downstream_api_key ? badge("已保存", "info") : badge("继承请求", "idle")}</td>
+              <td>${badge(`${rate}%`, rate >= 95 ? "ok" : rate > 0 ? "warn" : "idle")}</td>
+              <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
+              <td>${escapeHtml(formatDate(channel.updated_at))}</td>
+              <td>
+                <div class="row-actions">
+                  <button type="button" data-action="edit-channel" data-id="${id}" title="编辑">编辑</button>
+                  <button type="button" data-action="reset-runtime" data-id="${id}" title="重置运行状态">重置</button>
+                  <button type="button" data-action="delete-channel" data-id="${id}" class="danger" title="删除">删除</button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      function renderModels() {
+        if (!state.models.length) {
+          dom.modelGrid.innerHTML = `<div class="empty">暂无模型</div>`;
+          return;
+        }
+        dom.modelGrid.innerHTML = state.models.map((model) => `
+          <article class="model-card">
+            <div class="model-id mono">${escapeHtml(model.id)}</div>
+            <div class="model-meta">${escapeHtml(model.owned_by || "-")} · ${escapeHtml(model.object || "model")}</div>
+          </article>
+        `).join("");
+      }
+
+      function renderState() {
+        const config = state.config || {};
+        const gatewayState = config.state || {};
+        const details = [
+          ["Originator", config.originator],
+          ["Version", config.version],
+          ["User-Agent", config.user_agent],
+          ["Authorization", config.authorization],
+          ["Failure Threshold", config.failure_threshold],
+          ["Cooldown Seconds", config.cooldown_seconds],
+          ["Database Path", config.database_path],
+          ["Admin Token Path", config.admin_token_path],
+          ["Installation ID", gatewayState.installation_id],
+          ["Session ID", gatewayState.session_id],
+          ["Thread ID", gatewayState.thread_id],
+          ["Window ID", gatewayState.window_id],
+          ["Window Generation", gatewayState.window_generation],
+          ["Created At", gatewayState.created_at]
+        ];
+        dom.stateDetails.innerHTML = details.map(([label, value]) => `
+          <div class="detail-item">
+            <div class="detail-label">${escapeHtml(label)}</div>
+            <div class="detail-value mono">${escapeHtml(value ?? "-")}</div>
+          </div>
+        `).join("");
+      }
+
+      async function handleAction(action, id) {
+        try {
+          if (action === "new-channel") openChannelDialog();
+          if (action === "edit-channel") openChannelDialog(findChannel(id));
+          if (action === "close-dialog") dom.channelDialog.close();
+          if (action === "toggle-channel") await toggleChannel(id);
+          if (action === "reset-runtime") await resetRuntime(id);
+          if (action === "delete-channel") await deleteChannel(id);
+          if (action === "reset-fingerprint") await resetFingerprint();
+          if (action === "refresh-models") await refreshModels();
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      }
+
+      function openChannelDialog(channel = null) {
+        state.editingId = channel?.id || null;
+        dom.dialogTitle.textContent = channel ? "编辑渠道" : "添加渠道";
+        dom.channelName.value = channel?.name || "";
+        dom.channelUrl.value = channel?.upstream_url || "";
+        dom.channelPriority.value = channel?.priority ?? 0;
+        dom.channelEnabled.value = channel?.enabled === false ? "false" : "true";
+        dom.channelKey.value = "";
+        dom.clearChannelKey.checked = false;
+        dom.clearKeyWrap.style.display = channel ? "flex" : "none";
+        dom.channelDialog.showModal();
+        dom.channelName.focus();
+      }
+
+      async function saveChannel(event) {
+        event.preventDefault();
+        const body = {
+          name: dom.channelName.value.trim(),
+          upstream_url: dom.channelUrl.value.trim(),
+          priority: Number(dom.channelPriority.value || 0),
+          enabled: dom.channelEnabled.value === "true"
+        };
+        if (!body.upstream_url.startsWith("http://") && !body.upstream_url.startsWith("https://")) {
+          showNotice("上游地址必须以 http:// 或 https:// 开头", "error");
+          return;
+        }
+
+        const keyValue = dom.channelKey.value.trim();
+        if (state.editingId) {
+          if (dom.clearChannelKey.checked) body.downstream_api_key = null;
+          if (keyValue) body.downstream_api_key = keyValue;
+          await request(`/admin/channels/${encodeURIComponent(state.editingId)}`, { method: "PATCH", admin: true, body });
+        } else {
+          body.downstream_api_key = keyValue || null;
+          await request("/admin/channels", { method: "POST", admin: true, body });
+        }
+        dom.channelDialog.close();
+        await loadChannels();
+        render();
+        showNotice("渠道已保存", "success");
+      }
+
+      async function toggleChannel(id) {
+        const channel = findChannel(id);
+        const action = channel.enabled ? "disable" : "enable";
+        await request(`/admin/channels/${encodeURIComponent(id)}/${action}`, { method: "POST", admin: true });
+        await loadChannels();
+        render();
+        showNotice(channel.enabled ? "渠道已禁用" : "渠道已启用", "success");
+      }
+
+      async function resetRuntime(id) {
+        const channel = findChannel(id);
+        if (!window.confirm(`重置渠道「${channel.name}」的运行状态？`)) return;
+        await request(`/admin/channels/${encodeURIComponent(id)}/reset-runtime`, { method: "POST", admin: true });
+        await loadChannels();
+        render();
+        showNotice("运行状态已重置", "success");
+      }
+
+      async function deleteChannel(id) {
+        const channel = findChannel(id);
+        if (!window.confirm(`删除渠道「${channel.name}」？`)) return;
+        await request(`/admin/channels/${encodeURIComponent(id)}`, { method: "DELETE", admin: true });
+        await loadChannels();
+        render();
+        showNotice("渠道已删除", "success");
+      }
+
+      async function resetFingerprint() {
+        if (!window.confirm("重置网关指纹？")) return;
+        await request("/admin/fingerprint/reset", { method: "POST", admin: true });
+        state.config = await request("/v1/config");
+        render();
+        showNotice("指纹已重置", "success");
+      }
+
+      async function refreshModels() {
+        const data = await request("/v1/models");
+        state.models = Array.isArray(data.data) ? data.data : [];
+        render();
+        showNotice("模型已刷新", "success");
+      }
+
+      function findChannel(id) {
+        const channel = state.channels.find((item) => item.id === id);
+        if (!channel) throw new Error("渠道不存在");
+        return channel;
+      }
+
+      function statusHtml(channel) {
+        if (!channel.enabled) return badge("禁用", "idle");
+        if (isCoolingDown(channel)) return badge("冷却", "warn");
+        if (Number(channel.consecutive_failures || 0) > 0) return badge("异常", "warn");
+        return badge("正常", "ok");
+      }
+
+      function badge(text, type) {
+        return `<span class="status-pill ${type}">${escapeHtml(text)}</span>`;
+      }
+
+      function isCoolingDown(channel) {
+        if (!channel.cooldown_until) return false;
+        const time = new Date(channel.cooldown_until).getTime();
+        return Number.isFinite(time) && time > Date.now();
+      }
+
+      function formatDate(value) {
+        if (!value) return "-";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return value;
+        return new Intl.DateTimeFormat("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit"
+        }).format(date);
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          "\"": "&quot;",
+          "'": "&#39;"
+        })[char]);
+      }
+    })();
+  </script>
+</body>
+</html>
