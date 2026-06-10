@@ -20,12 +20,12 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "gateway.db"
 LEGACY_STATE_PATH = DATA_DIR / "state.json"
-ADMIN_TOKEN_PATH = DATA_DIR / "admin_token.txt"
-CLIENT_API_KEY_PATH = DATA_DIR / "client_api_key.txt"
+ENV_PATH = APP_DIR / ".env"
 MANAGEMENT_HTML_PATH = APP_DIR / "management.html"
 
 DEFAULT_UPSTREAM_URL = "https://new.sharedchat.cc/codex/v1"
 TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+CHANNEL_TEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 ORIGINATOR = "codex_cli_rs"
 CODEX_VERSION = "0.148.0"
@@ -63,13 +63,9 @@ METADATA_HEADER_KEYS = (
 RETRYABLE_STATUS_CODES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 
 MODELS = [
-    {"id": "gpt-5.5-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.5", "object": "model", "created": 1700000000, "owned_by": "openai"},
-    {"id": "gpt-5.4-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
+    {"id": "gpt-5.4", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.3-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
-    {"id": "gpt-5.2-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
-    {"id": "gpt-5.1-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
-    {"id": "gpt-5-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
 ]
 
 
@@ -102,6 +98,11 @@ class StreamResult(NamedTuple):
     channel: dict[str, Any]
     failover_count: int
     started_at: float
+
+
+class SecretValue(NamedTuple):
+    value: str
+    source: str
 
 
 def _now_ts() -> float:
@@ -232,28 +233,43 @@ def _reset_gateway_state() -> dict[str, Any]:
         return _get_gateway_state(conn)
 
 
-def _ensure_secret_file(path: Path) -> str:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        token = path.read_text(encoding="utf-8").strip()
-        if token:
-            return token
+def _load_dotenv(path: Path = ENV_PATH) -> dict[str, str]:
+    if not path.exists():
+        return {}
 
-    token = secrets.token_urlsafe(32)
-    path.write_text(token + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return token
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if key:
+            values[key] = value
+    return values
 
 
-def _ensure_admin_token() -> str:
-    return _ensure_secret_file(ADMIN_TOKEN_PATH)
+def _ensure_secret(name: str, dotenv: dict[str, str]) -> SecretValue:
+    value = os.environ.get(name)
+    if value and value.strip():
+        return SecretValue(value.strip(), "env")
+
+    value = dotenv.get(name)
+    if value and value.strip():
+        return SecretValue(value.strip(), "dotenv")
+
+    raise RuntimeError(f"{name} must be set in the environment or {ENV_PATH}")
 
 
-def _ensure_client_api_key() -> str:
-    return _ensure_secret_file(CLIENT_API_KEY_PATH)
+def _ensure_admin_token(dotenv: dict[str, str]) -> SecretValue:
+    return _ensure_secret("ADMIN_TOKEN", dotenv)
+
+
+def _ensure_client_api_key(dotenv: dict[str, str]) -> SecretValue:
+    return _ensure_secret("CLIENT_API_KEY", dotenv)
 
 
 def _init_db() -> None:
@@ -335,8 +351,13 @@ def _init_db() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _init_db()
-    app.state.admin_token = _ensure_admin_token()
-    app.state.client_api_key = _ensure_client_api_key()
+    dotenv = _load_dotenv()
+    admin_token = _ensure_admin_token(dotenv)
+    client_api_key = _ensure_client_api_key(dotenv)
+    app.state.admin_token = admin_token.value
+    app.state.admin_token_source = admin_token.source
+    app.state.client_api_key = client_api_key.value
+    app.state.client_api_key_source = client_api_key.source
     app.state.http_client = httpx.AsyncClient(timeout=TIMEOUT)
     try:
         yield
@@ -1063,6 +1084,52 @@ def _message_content_to_text(content: Any) -> str:
     return json.dumps(content, ensure_ascii=False)
 
 
+def _content_value_has_text(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(_content_value_has_text(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "output_text", "message"):
+            if _content_value_has_text(value.get(key)):
+                return True
+    return False
+
+
+def _test_response_has_content(data: Any) -> bool:
+    if not isinstance(data, dict) or not data:
+        return False
+
+    for key in ("output_text", "content", "text", "message"):
+        if _content_value_has_text(data.get(key)):
+            return True
+
+    output = data.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if _content_value_has_text(item.get("content")):
+                return True
+            if _content_value_has_text(item.get("text")):
+                return True
+
+    choices = data.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if isinstance(message, dict) and _content_value_has_text(message.get("content")):
+                return True
+            if _content_value_has_text(choice.get("text")):
+                return True
+
+    return False
+
+
 def _chat_content_to_response_parts(content: Any, role: str) -> list[dict[str, Any]]:
     text_type = "output_text" if role == "assistant" else "input_text"
 
@@ -1528,15 +1595,15 @@ async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
     with _connect_db() as conn:
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
     return {
         "status": "ok",
         "database_path": str(DB_PATH),
-        "admin_token_path": str(ADMIN_TOKEN_PATH),
-        "client_api_key_path": str(CLIENT_API_KEY_PATH),
+        "admin_token_source": request.app.state.admin_token_source,
+        "client_api_key_source": request.app.state.client_api_key_source,
         "channel_count": channel_count,
         "enabled_channel_count": enabled_channel_count,
     }
@@ -1548,15 +1615,15 @@ async def management_page():
 
 
 @app.get("/v1/config")
-async def config():
+async def config(request: Request):
     with _connect_db() as conn:
         state = _get_gateway_state(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
     return {
         "database_path": str(DB_PATH),
-        "admin_token_path": str(ADMIN_TOKEN_PATH),
-        "client_api_key_path": str(CLIENT_API_KEY_PATH),
+        "admin_token_source": request.app.state.admin_token_source,
+        "client_api_key_source": request.app.state.client_api_key_source,
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
         "user_agent": _codex_user_agent(),
@@ -1654,7 +1721,11 @@ async def reset_fingerprint(request: Request):
 @app.get("/admin/session")
 async def admin_session(request: Request):
     _require_admin(request)
-    return {"authenticated": True, "client_api_key_path": str(CLIENT_API_KEY_PATH)}
+    return {
+        "authenticated": True,
+        "admin_token_source": request.app.state.admin_token_source,
+        "client_api_key_source": request.app.state.client_api_key_source,
+    }
 
 
 @app.get("/admin/channels")
@@ -1786,6 +1857,66 @@ async def reset_channel_runtime(request: Request, channel_id: str):
         )
         conn.commit()
         return _public_channel(_get_channel_row(conn, channel_id), conn)
+
+
+@app.post("/admin/channels/{channel_id}/test")
+async def test_channel(request: Request, channel_id: str):
+    _require_admin(request)
+    body = await _read_json_body(request)
+    model = str(body.get("model") or "gpt-5.5").strip() or "gpt-5.5"
+    with _connect_db() as conn:
+        channel = dict(_get_channel_row(conn, channel_id))
+
+    result: dict[str, Any] = {
+        "success": False,
+        "channel_id": channel_id,
+        "model": model,
+        "latency_ms": 0,
+        "status_code": None,
+        "message": "测试失败",
+    }
+
+    started_at = time.perf_counter()
+    try:
+        headers = _codex_headers(request, _get_gateway_state(), channel)
+        response = await request.app.state.http_client.post(
+            _upstream_responses_url(channel),
+            headers=headers,
+            json={"model": model, "input": "ping", "max_output_tokens": 16},
+            timeout=CHANNEL_TEST_TIMEOUT,
+        )
+        result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
+        result["status_code"] = response.status_code
+        if not _status_is_success(response.status_code):
+            message = response.text.strip() or f"上游返回 HTTP {response.status_code}"
+            result["message"] = message[:500]
+            return result
+        if not response.content:
+            result["message"] = "上游返回空响应"
+            return result
+        try:
+            data = response.json()
+        except json.JSONDecodeError:
+            result["message"] = "上游返回非 JSON 响应"
+            return result
+        if not _test_response_has_content(data):
+            result["message"] = "上游返回空内容"
+            return result
+        result["success"] = True
+        result["message"] = "测试成功"
+        return result
+    except httpx.TimeoutException:
+        result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
+        result["message"] = "测试超时（60 秒）"
+        return result
+    except httpx.RequestError as exc:
+        result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
+        result["message"] = str(exc)
+        return result
+    except GatewayError as exc:
+        result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
+        result["message"] = exc.message
+        return result
 
 
 @app.get("/admin/channels/{channel_id}/stats")

@@ -25,7 +25,7 @@
       --blue-soft: #e8f0f8;
       --amber: #8a6218;
       --amber-soft: #f5ecd7;
-      --shadow: 0 12px 36px rgba(65, 55, 46, 0.08);
+      --shadow: 0 10px 28px rgba(65, 55, 46, 0.07);
       --radius: 8px;
     }
 
@@ -355,10 +355,11 @@
 
     .panel {
       border: 1px solid var(--line);
-      border-radius: var(--radius);
+      border-radius: 12px;
       background: var(--surface);
       box-shadow: var(--shadow);
       margin-bottom: 16px;
+      overflow: hidden;
     }
 
     .panel-header {
@@ -433,29 +434,46 @@
 
     table {
       width: 100%;
-      min-width: 980px;
+      min-width: 920px;
       border-collapse: collapse;
     }
 
+    .channel-table {
+      min-width: 0;
+      table-layout: fixed;
+    }
+
+    .channel-table th:nth-child(1), .channel-table td:nth-child(1) { width: 21%; }
+    .channel-table th:nth-child(2), .channel-table td:nth-child(2) { width: 23%; }
+    .channel-table th:nth-child(3), .channel-table td:nth-child(3) { width: 66px; }
+    .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 70px; }
+    .channel-table th:nth-child(5), .channel-table td:nth-child(5) { width: 92px; }
+    .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 86px; }
+    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 98px; }
+    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 58px; }
+    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 88px; }
+    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 194px; }
+
     th, td {
-      padding: 12px 14px;
+      padding: 11px 12px;
       border-bottom: 1px solid #eee9e3;
       text-align: left;
       vertical-align: middle;
     }
 
     th {
-      background: #ebe6df;
+      background: #f1ece5;
       color: #5c554f;
       font-weight: 680;
       white-space: nowrap;
+      font-size: 13px;
     }
 
     tbody tr:hover { background: var(--surface-soft); }
     tbody tr:last-child td { border-bottom: 0; }
 
     .truncate {
-      max-width: 360px;
+      max-width: 300px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -463,6 +481,14 @@
 
     .muted { color: var(--muted); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+    .compact-id {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
 
     .status-pill {
       display: inline-flex;
@@ -508,14 +534,45 @@
     .row-actions {
       display: flex;
       align-items: center;
-      gap: 6px;
-      justify-content: flex-end;
+      gap: 5px;
+      justify-content: flex-start;
       white-space: nowrap;
     }
 
     .row-actions button {
       min-width: 36px;
-      padding: 0 9px;
+      padding: 0 8px;
+      min-height: 32px;
+    }
+
+    .test-result {
+      display: none;
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: var(--surface-soft);
+    }
+
+    .test-result.show { display: block; }
+    .test-result.success { border-color: #b9decf; background: var(--green-soft); color: var(--green); }
+    .test-result.error { border-color: #e5c4bd; background: var(--red-soft); color: var(--red); }
+
+    .test-result-title {
+      font-weight: 740;
+      margin-bottom: 8px;
+    }
+
+    .test-result-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      color: var(--text);
+    }
+
+    .test-result-message {
+      grid-column: 1 / -1;
+      overflow-wrap: anywhere;
     }
 
     .detail-grid {
@@ -783,7 +840,7 @@
             </div>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="channel-table">
               <thead>
                 <tr>
                   <th>名称</th>
@@ -885,6 +942,33 @@
     </form>
   </dialog>
 
+  <dialog id="testDialog">
+    <form id="testForm">
+      <div class="dialog-header">
+        <div class="dialog-title" id="testDialogTitle">测试渠道</div>
+        <button type="button" class="ghost" data-action="close-test-dialog" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-grid">
+          <label class="wide">
+            <span class="field-label">渠道</span>
+            <input id="testChannelName" disabled>
+          </label>
+          <label class="wide">
+            <span class="field-label">测试模型</span>
+            <select id="testModel"></select>
+            <div class="field-help">默认使用 gpt-5.5。测试超时 60 秒，空响应或空内容会判定为失败。</div>
+          </label>
+        </div>
+        <div class="test-result" id="testResult"></div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" data-action="close-test-dialog">关闭</button>
+        <button type="submit" class="primary" id="runChannelTest">开始测试</button>
+      </div>
+    </form>
+  </dialog>
+
   <script>
     (() => {
       const storageKeys = {
@@ -912,6 +996,8 @@
         query: "",
         filter: "all",
         editingId: null,
+        testingId: null,
+        testResult: null,
         busy: false
       };
 
@@ -944,7 +1030,8 @@
           "channelKeyAlert", "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
-          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "saveChannel"
+          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "saveChannel",
+          "testDialog", "testForm", "testDialogTitle", "testChannelName", "testModel", "testResult", "runChannelTest"
         ]) {
           dom[id] = document.getElementById(id);
         }
@@ -978,6 +1065,7 @@
           renderChannels();
         });
         dom.channelForm.addEventListener("submit", saveChannel);
+        dom.testForm.addEventListener("submit", runChannelTest);
       }
 
       function setView(view) {
@@ -1132,6 +1220,7 @@
         dom.refreshAll.disabled = value;
         dom.applyConnection.disabled = value;
         dom.saveChannel.disabled = value;
+        dom.runChannelTest.disabled = value;
       }
 
       function setLoginBusy(value) {
@@ -1267,7 +1356,7 @@
           const rate = Number(channel.success_rate_24h || 0);
           return `
             <tr>
-              <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono">${id}</div></td>
+              <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono compact-id" title="${id}">${id}</div></td>
               <td><div class="truncate" title="${escapeHtml(channel.upstream_url)}">${escapeHtml(channel.upstream_url)}</div></td>
               <td><button type="button" class="toggle ${channel.enabled ? "on" : ""}" data-action="toggle-channel" data-id="${id}" aria-label="${channel.enabled ? "禁用" : "启用"}"></button></td>
               <td>${escapeHtml(channel.priority)}</td>
@@ -1278,6 +1367,7 @@
               <td>${escapeHtml(formatDate(channel.updated_at))}</td>
               <td>
                 <div class="row-actions">
+                  <button type="button" data-action="test-channel" data-id="${id}" title="测试渠道" ${channel.has_upstream_api_key ? "" : "disabled"}>测试</button>
                   <button type="button" data-action="edit-channel" data-id="${id}" title="编辑">编辑</button>
                   <button type="button" data-action="reset-runtime" data-id="${id}" title="重置运行状态">重置</button>
                   <button type="button" data-action="delete-channel" data-id="${id}" class="danger" title="删除">删除</button>
@@ -1322,8 +1412,8 @@
           ["Failure Threshold", config.failure_threshold],
           ["Cooldown Seconds", config.cooldown_seconds],
           ["Database Path", config.database_path],
-          ["Admin Token Path", config.admin_token_path],
-          ["Client API Key Path", config.client_api_key_path],
+          ["Admin Token Source", config.admin_token_source],
+          ["Client API Key Source", config.client_api_key_source],
           ["Installation ID", gatewayState.installation_id],
           ["Session ID", gatewayState.session_id],
           ["Thread ID", gatewayState.thread_id],
@@ -1344,6 +1434,8 @@
           if (action === "new-channel") openChannelDialog();
           if (action === "edit-channel") openChannelDialog(findChannel(id));
           if (action === "close-dialog") dom.channelDialog.close();
+          if (action === "test-channel") openTestDialog(findChannel(id));
+          if (action === "close-test-dialog") dom.testDialog.close();
           if (action === "toggle-channel") await toggleChannel(id);
           if (action === "reset-runtime") await resetRuntime(id);
           if (action === "delete-channel") await deleteChannel(id);
@@ -1369,6 +1461,71 @@
         dom.clearKeyWrap.style.display = channel ? "flex" : "none";
         dom.channelDialog.showModal();
         dom.channelName.focus();
+      }
+
+      function openTestDialog(channel) {
+        state.testingId = channel.id;
+        state.testResult = null;
+        dom.testDialogTitle.textContent = `测试渠道：${channel.name}`;
+        dom.testChannelName.value = `${channel.name} (${channel.id})`;
+        renderModelOptions();
+        renderTestResult();
+        dom.testDialog.showModal();
+        dom.testModel.focus();
+      }
+
+      function renderModelOptions() {
+        const modelIds = state.models.map((model) => model.id).filter(Boolean);
+        if (!modelIds.includes("gpt-5.5")) modelIds.unshift("gpt-5.5");
+        dom.testModel.innerHTML = modelIds.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
+        dom.testModel.value = "gpt-5.5";
+      }
+
+      async function runChannelTest(event) {
+        event.preventDefault();
+        if (!state.testingId) return;
+        setBusy(true);
+        state.testResult = { pending: true, message: "正在测试，最多等待 60 秒" };
+        renderTestResult();
+        try {
+          const result = await request(`/admin/channels/${encodeURIComponent(state.testingId)}/test`, {
+            method: "POST",
+            admin: true,
+            body: { model: dom.testModel.value || "gpt-5.5" }
+          });
+          state.testResult = result;
+          renderTestResult();
+        } catch (error) {
+          state.testResult = { success: false, message: error.message, latency_ms: 0, status_code: null, model: dom.testModel.value || "gpt-5.5" };
+          renderTestResult();
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      function renderTestResult() {
+        const result = state.testResult;
+        if (!result) {
+          dom.testResult.className = "test-result";
+          dom.testResult.innerHTML = "";
+          return;
+        }
+        if (result.pending) {
+          dom.testResult.className = "test-result show";
+          dom.testResult.innerHTML = `<div class="test-result-title">${escapeHtml(result.message)}</div>`;
+          return;
+        }
+        const success = Boolean(result.success);
+        dom.testResult.className = `test-result show ${success ? "success" : "error"}`;
+        dom.testResult.innerHTML = `
+          <div class="test-result-title">${success ? "测试成功" : "测试失败"}</div>
+          <div class="test-result-grid">
+            <div><span class="muted">模型</span><br><span class="mono">${escapeHtml(result.model || dom.testModel.value || "gpt-5.5")}</span></div>
+            <div><span class="muted">耗时</span><br><span class="mono">${escapeHtml(result.latency_ms ?? 0)} ms</span></div>
+            <div><span class="muted">HTTP 状态</span><br><span class="mono">${escapeHtml(result.status_code ?? "-")}</span></div>
+            <div class="test-result-message"><span class="muted">结果</span><br>${escapeHtml(result.message || "-")}</div>
+          </div>
+        `;
       }
 
       async function saveChannel(event) {
