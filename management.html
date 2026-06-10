@@ -48,6 +48,8 @@
       letter-spacing: 0;
     }
 
+    [hidden] { display: none !important; }
+
     button {
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -83,6 +85,68 @@
       grid-template-columns: 252px minmax(0, 1fr);
       min-height: 100vh;
     }
+
+    .login-view {
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      padding: 24px;
+      background:
+        radial-gradient(circle at top left, rgba(184, 101, 50, 0.18), transparent 34%),
+        linear-gradient(135deg, #f8f5f0 0%, #efe7dc 100%);
+    }
+
+    .login-card {
+      width: min(440px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 24px 70px rgba(65, 55, 46, 0.16);
+      padding: 24px;
+      backdrop-filter: blur(16px);
+    }
+
+    .login-card .brand { margin-bottom: 20px; }
+
+    .login-title {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+
+    .login-subtitle {
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+
+    .login-fields {
+      display: grid;
+      gap: 13px;
+    }
+
+    .login-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .login-actions button { min-width: 110px; }
+
+    .login-notice {
+      display: none;
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--surface-soft);
+      color: var(--muted);
+    }
+
+    .login-notice.show { display: block; }
+    .login-notice.error { color: var(--red); border-color: #e5c4bd; background: var(--red-soft); }
+    .login-notice.success { color: var(--green); border-color: #b9decf; background: var(--green-soft); }
 
     .sidebar {
       position: sticky;
@@ -180,7 +244,7 @@
 
     .connection {
       display: grid;
-      grid-template-columns: 210px 220px auto auto auto;
+      grid-template-columns: 220px auto auto auto;
       align-items: end;
       gap: 10px;
       justify-content: end;
@@ -189,6 +253,12 @@
     .field-label {
       display: block;
       margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .field-help {
+      margin-top: 5px;
       color: var(--muted);
       font-size: 12px;
     }
@@ -231,6 +301,18 @@
     .notice.show { display: flex; }
     .notice.error { color: var(--red); border-color: #e5c4bd; background: var(--red-soft); }
     .notice.success { color: var(--green); border-color: #b9decf; background: var(--green-soft); }
+
+    .inline-alert {
+      display: none;
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border: 1px solid #dfc98c;
+      border-radius: var(--radius);
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .inline-alert.show { display: block; }
 
     .view { display: none; }
     .view.active { display: block; }
@@ -549,7 +631,7 @@
 
     @media (max-width: 1120px) {
       .topbar { grid-template-columns: 1fr; }
-      .connection { justify-content: stretch; grid-template-columns: 1fr 1fr auto auto auto; }
+      .connection { justify-content: stretch; grid-template-columns: 1fr auto auto auto; }
       .summary-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
       .detail-grid { grid-template-columns: 1fr; }
       .detail-item:nth-child(odd) { border-right: 0; }
@@ -582,7 +664,39 @@
   </style>
 </head>
 <body>
-  <div class="app">
+  <section class="login-view" id="loginView">
+    <form class="login-card" id="loginForm">
+      <div class="brand" aria-label="codex2api">
+        <div class="brand-mark">C2</div>
+        <div>
+          <div class="brand-title">codex2api</div>
+          <div class="brand-subtitle">Gateway Management</div>
+        </div>
+      </div>
+      <h1 class="login-title">管理台登录</h1>
+      <div class="login-subtitle">输入 Admin Token 后才会加载管理信息。</div>
+      <div class="login-fields">
+        <label>
+          <span class="field-label">API Base URL</span>
+          <input id="loginApiBase" autocomplete="off" spellcheck="false">
+        </label>
+        <label>
+          <span class="field-label">Admin Token</span>
+          <input id="loginAdminToken" type="password" autocomplete="off" spellcheck="false" required>
+        </label>
+      </div>
+      <div class="login-actions">
+        <label class="remember">
+          <input id="loginRememberToken" type="checkbox">
+          <span>本机保存</span>
+        </label>
+        <button id="loginButton" type="submit" class="primary">登录</button>
+      </div>
+      <div class="login-notice" id="loginNotice" role="status"></div>
+    </form>
+  </section>
+
+  <div class="app" id="appShell" hidden>
     <aside class="sidebar">
       <div class="brand" aria-label="codex2api">
         <div class="brand-mark">C2</div>
@@ -618,16 +732,9 @@
             <span class="field-label">API Base URL</span>
             <input id="apiBase" autocomplete="off" spellcheck="false">
           </label>
-          <label>
-            <span class="field-label">Admin Token</span>
-            <input id="adminToken" type="password" autocomplete="off" spellcheck="false">
-          </label>
-          <label class="remember">
-            <input id="rememberToken" type="checkbox">
-            <span>本机保存</span>
-          </label>
           <button id="applyConnection" type="button" class="primary">连接</button>
           <button id="refreshAll" type="button">刷新</button>
+          <button id="logoutButton" type="button">退出</button>
         </div>
       </header>
 
@@ -666,6 +773,7 @@
           <input id="channelSearch" placeholder="按名称或上游地址筛选" autocomplete="off">
           <div class="filter-row" id="channelFilters"></div>
         </div>
+        <div class="inline-alert" id="channelKeyAlert" role="status"></div>
         <section class="panel">
           <div class="panel-header">
             <div class="panel-title">渠道</div>
@@ -682,7 +790,8 @@
                   <th>上游地址</th>
                   <th>启用</th>
                   <th>优先级</th>
-                  <th>密钥</th>
+                  <th>上游 Key</th>
+                  <th>下游 Key</th>
                   <th>24h 成功率</th>
                   <th>失败</th>
                   <th>更新时间</th>
@@ -735,7 +844,8 @@
           </label>
           <label class="wide">
             <span class="field-label">上游地址</span>
-            <input id="channelUrl" required type="url" autocomplete="off" spellcheck="false">
+            <input id="channelUrl" required type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/v1">
+            <div class="field-help">填写 OpenAI 兼容 API 的 /v1 基础地址，系统会自动请求 /responses；旧的完整 /v1/responses 也兼容。</div>
           </label>
           <label>
             <span class="field-label">优先级</span>
@@ -749,12 +859,22 @@
             </select>
           </label>
           <label class="wide">
-            <span class="field-label">Downstream API Key</span>
-            <input id="channelKey" type="password" autocomplete="off" spellcheck="false">
+            <span class="field-label">上游 API Key</span>
+            <input id="channelUpstreamKey" type="password" autocomplete="off" spellcheck="false" placeholder="本渠道调用上游使用的 key">
+            <div class="field-help">保存后仅显示是否已设置，不会回显明文。</div>
+          </label>
+          <label class="checkbox-line wide" id="clearUpstreamKeyWrap">
+            <input id="clearChannelUpstreamKey" type="checkbox">
+            <span>清除已保存上游 API Key</span>
+          </label>
+          <label class="wide">
+            <span class="field-label">下游 API Key（可选）</span>
+            <input id="channelDownstreamKey" type="password" autocomplete="off" spellcheck="false" placeholder="本渠道专属调用 key，可留空">
+            <div class="field-help">留空时只接受全局统一调用 key；填写后也可用该 key 只调用本渠道。</div>
           </label>
           <label class="checkbox-line wide" id="clearKeyWrap">
             <input id="clearChannelKey" type="checkbox">
-            <span>清除已保存密钥</span>
+            <span>清除已保存下游 API Key</span>
           </label>
         </div>
       </div>
@@ -783,6 +903,7 @@
         apiBase: initialBaseUrl(),
         adminToken: localStorage.getItem(storageKeys.adminToken) || "",
         rememberToken: Boolean(localStorage.getItem(storageKeys.adminToken)),
+        authenticated: false,
         activeView: "overview",
         health: null,
         config: null,
@@ -807,22 +928,23 @@
 
       function init() {
         cacheDom();
+        dom.loginApiBase.value = state.apiBase;
+        dom.loginAdminToken.value = state.adminToken;
+        dom.loginRememberToken.checked = state.rememberToken;
         dom.apiBase.value = state.apiBase;
-        dom.adminToken.value = state.adminToken;
-        dom.rememberToken.checked = state.rememberToken;
         bindEvents();
         render();
-        refreshAll();
       }
 
       function cacheDom() {
         for (const id of [
-          "apiBase", "adminToken", "rememberToken", "applyConnection", "refreshAll", "notice",
+          "loginView", "appShell", "loginForm", "loginApiBase", "loginAdminToken", "loginRememberToken",
+          "loginButton", "loginNotice", "apiBase", "applyConnection", "refreshAll", "logoutButton", "notice",
           "pageTitle", "pageKicker", "summaryGrid", "overviewRows", "channelSearch", "channelFilters",
-          "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
+          "channelKeyAlert", "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
-          "channelUrl", "channelPriority", "channelEnabled", "channelKey", "clearChannelKey", "clearKeyWrap",
-          "saveChannel"
+          "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
+          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "saveChannel"
         ]) {
           dom[id] = document.getElementById(id);
         }
@@ -847,8 +969,10 @@
           }
         });
 
+        dom.loginForm.addEventListener("submit", login);
         dom.applyConnection.addEventListener("click", applyConnection);
         dom.refreshAll.addEventListener("click", refreshAll);
+        dom.logoutButton.addEventListener("click", logout);
         dom.channelSearch.addEventListener("input", () => {
           state.query = dom.channelSearch.value.trim().toLowerCase();
           renderChannels();
@@ -870,18 +994,72 @@
 
       function applyConnection() {
         state.apiBase = dom.apiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
-        state.adminToken = dom.adminToken.value.trim();
-        state.rememberToken = dom.rememberToken.checked;
+        localStorage.setItem(storageKeys.apiBase, state.apiBase);
+        refreshAll();
+      }
+
+      async function login(event) {
+        event.preventDefault();
+        state.apiBase = dom.loginApiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
+        state.adminToken = dom.loginAdminToken.value.trim();
+        state.rememberToken = dom.loginRememberToken.checked;
+        if (!state.adminToken) {
+          showLoginNotice("请输入 Admin Token", "error");
+          return;
+        }
+
+        setLoginBusy(true);
+        showLoginNotice("正在验证", "");
+        try {
+          localStorage.setItem(storageKeys.apiBase, state.apiBase);
+          if (state.rememberToken) {
+            localStorage.setItem(storageKeys.adminToken, state.adminToken);
+          } else {
+            localStorage.removeItem(storageKeys.adminToken);
+          }
+          await request("/admin/session", { admin: true });
+          state.authenticated = true;
+          dom.apiBase.value = state.apiBase;
+          dom.loginView.hidden = true;
+          dom.appShell.hidden = false;
+          showLoginNotice("登录成功", "success");
+          await refreshAll();
+        } catch (error) {
+          state.authenticated = false;
+          showLoginNotice(error.message, "error");
+        } finally {
+          setLoginBusy(false);
+        }
+      }
+
+      function logout() {
+        state.authenticated = false;
+        state.adminToken = "";
+        state.health = null;
+        state.config = null;
+        state.models = [];
+        state.channels = [];
+        localStorage.removeItem(storageKeys.adminToken);
+        dom.loginAdminToken.value = "";
+        dom.loginApiBase.value = state.apiBase;
+        dom.appShell.hidden = true;
+        dom.loginView.hidden = false;
+        render();
+        showLoginNotice("已退出", "");
+      }
+
+      function persistConnection() {
         localStorage.setItem(storageKeys.apiBase, state.apiBase);
         if (state.rememberToken && state.adminToken) {
           localStorage.setItem(storageKeys.adminToken, state.adminToken);
         } else {
           localStorage.removeItem(storageKeys.adminToken);
         }
-        refreshAll();
       }
 
       async function refreshAll() {
+        if (!state.authenticated) return;
+        persistConnection();
         setBusy(true);
         showNotice("正在刷新", "");
         const errors = [];
@@ -892,23 +1070,17 @@
           loadPublic("/v1/models", (data) => { state.models = Array.isArray(data.data) ? data.data : []; }, errors, "models")
         ]);
 
-        if (state.adminToken) {
-          try {
-            await loadChannels();
-          } catch (error) {
-            state.channels = [];
-            errors.push(`admin: ${error.message}`);
-          }
-        } else {
+        try {
+          await loadChannels();
+        } catch (error) {
           state.channels = [];
+          errors.push(`admin: ${error.message}`);
         }
 
         render();
         setBusy(false);
         if (errors.length) {
           showNotice(errors.join("；"), "error");
-        } else if (!state.adminToken) {
-          showNotice("公开状态已加载；渠道管理需要 Admin Token", "");
         } else {
           showNotice("已刷新", "success");
         }
@@ -962,6 +1134,10 @@
         dom.saveChannel.disabled = value;
       }
 
+      function setLoginBusy(value) {
+        dom.loginButton.disabled = value;
+      }
+
       function showNotice(message, type) {
         dom.notice.textContent = message;
         dom.notice.className = `notice show ${type || ""}`.trim();
@@ -969,6 +1145,11 @@
           window.clearTimeout(showNotice.timer);
           showNotice.timer = window.setTimeout(() => dom.notice.classList.remove("show"), 2400);
         }
+      }
+
+      function showLoginNotice(message, type) {
+        dom.loginNotice.textContent = message;
+        dom.loginNotice.className = `login-notice show ${type || ""}`.trim();
       }
 
       function render() {
@@ -996,8 +1177,9 @@
         const successRate = total24h ? Math.round((success24h / total24h) * 1000) / 10 : 0;
         const cooldown = channels.filter(isCoolingDown).length;
         const disabled = channels.filter((item) => !item.enabled).length;
-        const keyed = channels.filter((item) => item.has_downstream_api_key).length;
-        return { totalChannels, enabledChannels, total24h, success24h, failure24h, successRate, cooldown, disabled, keyed };
+        const keyed = channels.filter((item) => item.has_upstream_api_key).length;
+        const missingUpstreamKey = channels.filter((item) => item.enabled && !item.has_upstream_api_key).length;
+        return { totalChannels, enabledChannels, total24h, success24h, failure24h, successRate, cooldown, disabled, keyed, missingUpstreamKey };
       }
 
       function sum(items, key) {
@@ -1019,7 +1201,7 @@
       }
 
       function renderOverviewRows() {
-        if (!state.adminToken) {
+        if (!state.authenticated) {
           dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
@@ -1046,7 +1228,7 @@
           ["enabled", "启用", state.channels.filter((item) => item.enabled).length],
           ["disabled", "禁用", metrics.disabled],
           ["cooldown", "冷却", metrics.cooldown],
-          ["keyed", "有密钥", metrics.keyed]
+          ["keyed", "有上游 Key", metrics.keyed]
         ];
         dom.channelFilters.innerHTML = filters.map(([key, label, count]) => `
           <button type="button" class="chip ${state.filter === key ? "active" : ""}" data-filter="${key}">
@@ -1058,9 +1240,10 @@
       function renderChannels() {
         const metrics = buildMetrics();
         renderFilters(metrics);
+        renderChannelKeyAlert(metrics);
 
-        if (!state.adminToken) {
-          dom.channelRows.innerHTML = `<tr><td colspan="9" class="empty">需要 Admin Token</td></tr>`;
+        if (!state.authenticated) {
+          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
 
@@ -1070,12 +1253,12 @@
           if (state.filter === "enabled") return channel.enabled;
           if (state.filter === "disabled") return !channel.enabled;
           if (state.filter === "cooldown") return isCoolingDown(channel);
-          if (state.filter === "keyed") return channel.has_downstream_api_key;
+          if (state.filter === "keyed") return channel.has_upstream_api_key;
           return true;
         });
 
         if (!rows.length) {
-          dom.channelRows.innerHTML = `<tr><td colspan="9" class="empty">没有匹配渠道</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">没有匹配渠道</td></tr>`;
           return;
         }
 
@@ -1088,7 +1271,8 @@
               <td><div class="truncate" title="${escapeHtml(channel.upstream_url)}">${escapeHtml(channel.upstream_url)}</div></td>
               <td><button type="button" class="toggle ${channel.enabled ? "on" : ""}" data-action="toggle-channel" data-id="${id}" aria-label="${channel.enabled ? "禁用" : "启用"}"></button></td>
               <td>${escapeHtml(channel.priority)}</td>
-              <td>${channel.has_downstream_api_key ? badge("已保存", "info") : badge("继承请求", "idle")}</td>
+              <td>${channel.has_upstream_api_key ? badge("已保存", "info") : `${badge("缺失", "bad")}<div class="muted">不可调用</div>`}</td>
+              <td>${channel.has_downstream_api_key ? badge("专属", "info") : badge("全局", "idle")}</td>
               <td>${badge(`${rate}%`, rate >= 95 ? "ok" : rate > 0 ? "warn" : "idle")}</td>
               <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
               <td>${escapeHtml(formatDate(channel.updated_at))}</td>
@@ -1102,6 +1286,16 @@
             </tr>
           `;
         }).join("");
+      }
+
+      function renderChannelKeyAlert(metrics) {
+        if (!state.authenticated || metrics.missingUpstreamKey === 0) {
+          dom.channelKeyAlert.classList.remove("show");
+          dom.channelKeyAlert.textContent = "";
+          return;
+        }
+        dom.channelKeyAlert.textContent = `${metrics.missingUpstreamKey} 个启用渠道缺少上游 API Key。缺少上游 Key 的渠道不会参与实际调用，请编辑渠道补充。`;
+        dom.channelKeyAlert.classList.add("show");
       }
 
       function renderModels() {
@@ -1129,6 +1323,7 @@
           ["Cooldown Seconds", config.cooldown_seconds],
           ["Database Path", config.database_path],
           ["Admin Token Path", config.admin_token_path],
+          ["Client API Key Path", config.client_api_key_path],
           ["Installation ID", gatewayState.installation_id],
           ["Session ID", gatewayState.session_id],
           ["Thread ID", gatewayState.thread_id],
@@ -1166,8 +1361,11 @@
         dom.channelUrl.value = channel?.upstream_url || "";
         dom.channelPriority.value = channel?.priority ?? 0;
         dom.channelEnabled.value = channel?.enabled === false ? "false" : "true";
-        dom.channelKey.value = "";
+        dom.channelUpstreamKey.value = "";
+        dom.channelDownstreamKey.value = "";
+        dom.clearChannelUpstreamKey.checked = false;
         dom.clearChannelKey.checked = false;
+        dom.clearUpstreamKeyWrap.style.display = channel ? "flex" : "none";
         dom.clearKeyWrap.style.display = channel ? "flex" : "none";
         dom.channelDialog.showModal();
         dom.channelName.focus();
@@ -1186,13 +1384,17 @@
           return;
         }
 
-        const keyValue = dom.channelKey.value.trim();
+        const upstreamKeyValue = dom.channelUpstreamKey.value.trim();
+        const downstreamKeyValue = dom.channelDownstreamKey.value.trim();
         if (state.editingId) {
+          if (dom.clearChannelUpstreamKey.checked) body.upstream_api_key = null;
+          if (upstreamKeyValue) body.upstream_api_key = upstreamKeyValue;
           if (dom.clearChannelKey.checked) body.downstream_api_key = null;
-          if (keyValue) body.downstream_api_key = keyValue;
+          if (downstreamKeyValue) body.downstream_api_key = downstreamKeyValue;
           await request(`/admin/channels/${encodeURIComponent(state.editingId)}`, { method: "PATCH", admin: true, body });
         } else {
-          body.downstream_api_key = keyValue || null;
+          body.upstream_api_key = upstreamKeyValue || null;
+          body.downstream_api_key = downstreamKeyValue || null;
           await request("/admin/channels", { method: "POST", admin: true, body });
         }
         dom.channelDialog.close();

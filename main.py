@@ -21,9 +21,10 @@ DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "gateway.db"
 LEGACY_STATE_PATH = DATA_DIR / "state.json"
 ADMIN_TOKEN_PATH = DATA_DIR / "admin_token.txt"
+CLIENT_API_KEY_PATH = DATA_DIR / "client_api_key.txt"
 MANAGEMENT_HTML_PATH = APP_DIR / "management.html"
 
-DEFAULT_UPSTREAM_URL = "https://new.sharedchat.cc/codex/v1/responses"
+DEFAULT_UPSTREAM_URL = "https://new.sharedchat.cc/codex/v1"
 TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 ORIGINATOR = "codex_cli_rs"
@@ -231,20 +232,28 @@ def _reset_gateway_state() -> dict[str, Any]:
         return _get_gateway_state(conn)
 
 
-def _ensure_admin_token() -> str:
+def _ensure_secret_file(path: Path) -> str:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if ADMIN_TOKEN_PATH.exists():
-        token = ADMIN_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    if path.exists():
+        token = path.read_text(encoding="utf-8").strip()
         if token:
             return token
 
     token = secrets.token_urlsafe(32)
-    ADMIN_TOKEN_PATH.write_text(token + "\n", encoding="utf-8")
+    path.write_text(token + "\n", encoding="utf-8")
     try:
-        os.chmod(ADMIN_TOKEN_PATH, 0o600)
+        os.chmod(path, 0o600)
     except OSError:
         pass
     return token
+
+
+def _ensure_admin_token() -> str:
+    return _ensure_secret_file(ADMIN_TOKEN_PATH)
+
+
+def _ensure_client_api_key() -> str:
+    return _ensure_secret_file(CLIENT_API_KEY_PATH)
 
 
 def _init_db() -> None:
@@ -263,6 +272,7 @@ def _init_db() -> None:
                 upstream_url TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                upstream_api_key TEXT,
                 downstream_api_key TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -293,6 +303,13 @@ def _init_db() -> None:
             ON channel_events(channel_id, created_at);
             """
         )
+        channel_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(channels)").fetchall()
+        }
+        if "upstream_api_key" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN upstream_api_key TEXT")
+            conn.execute("UPDATE channels SET upstream_api_key = downstream_api_key WHERE downstream_api_key IS NOT NULL")
+            conn.execute("UPDATE channels SET downstream_api_key = NULL WHERE downstream_api_key IS NOT NULL")
         _ensure_gateway_state(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         if channel_count == 0:
@@ -300,10 +317,10 @@ def _init_db() -> None:
             now = _utc_now()
             conn.execute(
                 """
-                INSERT INTO channels(id, name, upstream_url, priority, enabled, downstream_api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, now, now),
+                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, now, now),
             )
             conn.execute(
                 """
@@ -319,6 +336,7 @@ def _init_db() -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _init_db()
     app.state.admin_token = _ensure_admin_token()
+    app.state.client_api_key = _ensure_client_api_key()
     app.state.http_client = httpx.AsyncClient(timeout=TIMEOUT)
     try:
         yield
@@ -437,27 +455,52 @@ def _format_bearer_token(value: str) -> str:
     return f"Bearer {token}"
 
 
-def _authorization_header(request: Request, channel: dict[str, Any]) -> str:
-    channel_key = channel.get("downstream_api_key")
-    if isinstance(channel_key, str) and channel_key.strip():
-        return _format_bearer_token(channel_key)
-
+def _request_bearer_token(request: Request) -> str:
     authorization = request.headers.get("Authorization", "")
-    if authorization.startswith("Bearer ") and authorization.removeprefix("Bearer ").strip():
-        return authorization
+    if authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        if token:
+            return token
 
     raise GatewayError(
-        "Missing Authorization bearer token and channel downstream_api_key",
+        "Missing Authorization bearer token",
         status_code=401,
         code="missing_api_key",
         error_type="authentication_error",
     )
 
 
+def _channel_accepts_client_key(channel: dict[str, Any], token: str) -> bool:
+    channel_key = channel.get("downstream_api_key")
+    if isinstance(channel_key, str) and channel_key.strip():
+        return secrets.compare_digest(token, channel_key.strip())
+    return False
+
+
+def _upstream_authorization_header(channel: dict[str, Any]) -> str:
+    channel_key = channel.get("upstream_api_key")
+    if isinstance(channel_key, str) and channel_key.strip():
+        return _format_bearer_token(channel_key)
+
+    raise GatewayError(
+        "Missing channel upstream_api_key",
+        status_code=401,
+        code="missing_upstream_api_key",
+        error_type="authentication_error",
+    )
+
+
+def _upstream_responses_url(channel: dict[str, Any]) -> str:
+    upstream_url = str(channel["upstream_url"]).rstrip("/")
+    if upstream_url.endswith("/responses"):
+        return upstream_url
+    return f"{upstream_url}/responses"
+
+
 def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, Any]) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
-        "Authorization": _authorization_header(request, channel),
+        "Authorization": _upstream_authorization_header(channel),
         "User-Agent": _codex_user_agent(),
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
@@ -582,7 +625,8 @@ def _refresh_expired_cooldowns(conn: sqlite3.Connection) -> None:
     )
 
 
-def _select_channels() -> list[dict[str, Any]]:
+def _select_channels(request: Request) -> list[dict[str, Any]]:
+    client_token = _request_bearer_token(request)
     with _connect_db() as conn:
         _refresh_expired_cooldowns(conn)
         conn.commit()
@@ -590,7 +634,7 @@ def _select_channels() -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT
-                c.id, c.name, c.upstream_url, c.priority, c.enabled, c.downstream_api_key,
+                c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
                 c.created_at, c.updated_at,
                 COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
                 r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -605,7 +649,20 @@ def _select_channels() -> list[dict[str, Any]]:
     groups: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         channel = dict(row)
+        if (
+            not secrets.compare_digest(client_token, request.app.state.client_api_key)
+            and not _channel_accepts_client_key(channel, client_token)
+        ):
+            continue
         groups.setdefault(int(channel["priority"]), []).append(channel)
+
+    if rows and not groups:
+        raise GatewayError(
+            "Invalid API key",
+            status_code=401,
+            code="invalid_api_key",
+            error_type="authentication_error",
+        )
 
     selected: list[dict[str, Any]] = []
     for priority in sorted(groups.keys(), reverse=True):
@@ -653,6 +710,7 @@ def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection 
         "upstream_url": channel["upstream_url"],
         "priority": int(channel["priority"]),
         "enabled": bool(channel["enabled"]),
+        "has_upstream_api_key": bool(channel.get("upstream_api_key")),
         "has_downstream_api_key": bool(channel.get("downstream_api_key")),
         "consecutive_failures": int(channel.get("consecutive_failures") or 0),
         "cooldown_until": _ts_to_iso(float(cooldown_until)) if cooldown_until is not None else None,
@@ -670,7 +728,7 @@ def _get_channel_row(conn: sqlite3.Connection, channel_id: str) -> sqlite3.Row:
     row = conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.downstream_api_key,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -691,7 +749,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.downstream_api_key,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -703,7 +761,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, Any]:
-    allowed = {"name", "upstream_url", "priority", "enabled", "downstream_api_key"}
+    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key"}
     unknown = sorted(set(body) - allowed)
     if unknown:
         raise GatewayError(f"Unknown channel fields: {', '.join(unknown)}", 400, "unknown_channel_fields")
@@ -740,6 +798,12 @@ def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, 
         values["enabled"] = 1 if body["enabled"] else 0
     elif not partial:
         values["enabled"] = 1
+
+    if "upstream_api_key" in body:
+        key = body["upstream_api_key"]
+        values["upstream_api_key"] = str(key).strip() if key is not None and str(key).strip() else None
+    elif not partial:
+        values["upstream_api_key"] = None
 
     if "downstream_api_key" in body:
         key = body["downstream_api_key"]
@@ -815,7 +879,7 @@ def _upstream_error_from_bytes(
 
 
 async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -> UpstreamResult:
-    channels = _select_channels()
+    channels = _select_channels(request)
     if not channels:
         raise GatewayError("No available channels", 503, "no_available_channels")
 
@@ -831,13 +895,13 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
         try:
             headers = _codex_headers(request, state, channel)
         except GatewayError as exc:
-            if exc.code == "missing_api_key":
+            if exc.code == "missing_upstream_api_key":
                 missing_key_error = exc
                 continue
             raise
         started_at = time.perf_counter()
         try:
-            response = await client.post(channel["upstream_url"], headers=headers, json=body)
+            response = await client.post(_upstream_responses_url(channel), headers=headers, json=body)
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True)
@@ -883,7 +947,7 @@ async def _open_upstream_stream(
     headers: dict[str, str],
     body: dict[str, Any],
 ) -> tuple[Any, httpx.Response]:
-    stream_context = client.stream("POST", channel["upstream_url"], headers=headers, json=body)
+    stream_context = client.stream("POST", _upstream_responses_url(channel), headers=headers, json=body)
     response = await stream_context.__aenter__()
     return stream_context, response
 
@@ -893,7 +957,10 @@ async def _close_upstream_stream(stream_context: Any) -> None:
 
 
 async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> StreamResult | JSONResponse:
-    channels = _select_channels()
+    try:
+        channels = _select_channels(request)
+    except GatewayError as exc:
+        return _gateway_error_response(exc)
     if not channels:
         return _error_response("No available channels", 503, "no_available_channels")
 
@@ -908,7 +975,7 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
         try:
             headers = _codex_headers(request, state, channel)
         except GatewayError as exc:
-            if exc.code == "missing_api_key":
+            if exc.code == "missing_upstream_api_key":
                 missing_key_error = exc
                 continue
             raise
@@ -1469,18 +1536,14 @@ async def health():
         "status": "ok",
         "database_path": str(DB_PATH),
         "admin_token_path": str(ADMIN_TOKEN_PATH),
+        "client_api_key_path": str(CLIENT_API_KEY_PATH),
         "channel_count": channel_count,
         "enabled_channel_count": enabled_channel_count,
     }
 
 
-@app.get("/management.html", include_in_schema=False)
-async def management_html():
-    return FileResponse(MANAGEMENT_HTML_PATH)
-
-
-@app.get("/", include_in_schema=False)
-async def management_root():
+@app.get("/management", include_in_schema=False)
+async def management_page():
     return FileResponse(MANAGEMENT_HTML_PATH)
 
 
@@ -1493,10 +1556,11 @@ async def config():
     return {
         "database_path": str(DB_PATH),
         "admin_token_path": str(ADMIN_TOKEN_PATH),
+        "client_api_key_path": str(CLIENT_API_KEY_PATH),
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
         "user_agent": _codex_user_agent(),
-        "authorization": "channel_downstream_api_key_or_request_header",
+        "authorization": "client_api_key_or_channel_downstream_api_key",
         "failure_threshold": FAILURE_THRESHOLD,
         "cooldown_seconds": COOLDOWN_SECONDS,
         "channel_count": channel_count,
@@ -1587,6 +1651,12 @@ async def reset_fingerprint(request: Request):
     return {"state": _public_state(state)}
 
 
+@app.get("/admin/session")
+async def admin_session(request: Request):
+    _require_admin(request)
+    return {"authenticated": True, "client_api_key_path": str(CLIENT_API_KEY_PATH)}
+
+
 @app.get("/admin/channels")
 async def list_channels(request: Request):
     _require_admin(request)
@@ -1605,8 +1675,8 @@ async def create_channel(request: Request):
     with _connect_db() as conn:
         conn.execute(
             """
-            INSERT INTO channels(id, name, upstream_url, priority, enabled, downstream_api_key, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -1614,6 +1684,7 @@ async def create_channel(request: Request):
                 values["upstream_url"],
                 values["priority"],
                 values["enabled"],
+                values["upstream_api_key"],
                 values["downstream_api_key"],
                 now,
                 now,
