@@ -1028,6 +1028,97 @@ def _chat_content_to_response_parts(content: Any, role: str) -> list[dict[str, A
     return parts
 
 
+def _chat_tool_to_response_tool(tool: Any) -> Any:
+    if not isinstance(tool, dict) or tool.get("type") != "function":
+        return tool
+
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        raise GatewayError("Function tool must include a function object", 400, "invalid_tool", param="tools")
+
+    name = function.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise GatewayError("Function tool name is required", 400, "invalid_tool_name", param="tools.function.name")
+
+    response_tool: dict[str, Any] = {"type": "function", "name": name}
+    for source_key, target_key in (
+        ("description", "description"),
+        ("parameters", "parameters"),
+        ("strict", "strict"),
+    ):
+        if source_key in function:
+            response_tool[target_key] = function[source_key]
+    return response_tool
+
+
+def _chat_tools_to_response_tools(tools: Any) -> list[Any]:
+    if not isinstance(tools, list):
+        raise GatewayError("tools must be an array", 400, "invalid_tools", param="tools")
+    return [_chat_tool_to_response_tool(tool) for tool in tools]
+
+
+def _chat_tool_choice_to_response_tool_choice(tool_choice: Any) -> Any:
+    if not isinstance(tool_choice, dict) or tool_choice.get("type") != "function":
+        return tool_choice
+
+    function = tool_choice.get("function")
+    name = function.get("name") if isinstance(function, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        raise GatewayError(
+            "Function tool_choice name is required",
+            400,
+            "invalid_tool_choice",
+            param="tool_choice.function.name",
+        )
+    return {"type": "function", "name": name}
+
+
+def _chat_tool_calls_to_response_items(tool_calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(tool_calls, list):
+        raise GatewayError("tool_calls must be an array", 400, "invalid_tool_calls", param="messages.tool_calls")
+
+    items: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict) or tool_call.get("type") != "function":
+            raise GatewayError("Only function tool calls are supported", 400, "unsupported_tool_call")
+
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            raise GatewayError("Function tool call must include a function object", 400, "invalid_tool_call")
+
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise GatewayError("Function tool call name is required", 400, "invalid_tool_call_name")
+
+        arguments = function.get("arguments", "")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+
+        call_id = tool_call.get("id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise GatewayError("Tool call id is required", 400, "invalid_tool_call_id")
+
+        items.append(
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            }
+        )
+    return items
+
+
+def _chat_response_format_to_text(response_format: Any) -> dict[str, Any]:
+    if not isinstance(response_format, dict):
+        raise GatewayError("response_format must be an object", 400, "invalid_response_format", param="response_format")
+
+    format_type = response_format.get("type")
+    if format_type == "json_schema" and isinstance(response_format.get("json_schema"), dict):
+        return {"format": {"type": "json_schema", **response_format["json_schema"]}}
+    return {"format": dict(response_format)}
+
+
 def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
     messages = chat_body.get("messages")
     if not isinstance(messages, list):
@@ -1047,17 +1138,33 @@ def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
             if text:
                 instructions.append(text)
         elif role in {"user", "assistant"}:
-            input_items.append(
-                {
-                    "role": role,
-                    "content": _chat_content_to_response_parts(content, role),
-                }
-            )
+            tool_calls = message.get("tool_calls") if role == "assistant" else None
+            if tool_calls is not None and _message_content_to_text(content):
+                input_items.append(
+                    {
+                        "role": role,
+                        "content": _chat_content_to_response_parts(content, role),
+                    }
+                )
+            elif tool_calls is None:
+                input_items.append(
+                    {
+                        "role": role,
+                        "content": _chat_content_to_response_parts(content, role),
+                    }
+                )
+
+            if tool_calls is not None:
+                input_items.extend(_chat_tool_calls_to_response_items(tool_calls))
         elif role == "tool":
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise GatewayError("Tool message tool_call_id is required", 400, "invalid_tool_call_id")
             input_items.append(
                 {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": _message_content_to_text(content)}],
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": _message_content_to_text(content),
                 }
             )
         else:
@@ -1080,8 +1187,6 @@ def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
         "parallel_tool_calls",
         "reasoning",
         "text",
-        "tools",
-        "tool_choice",
         "store",
         "previous_response_id",
         "service_tier",
@@ -1092,6 +1197,15 @@ def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
     for field in passthrough_fields:
         if field in chat_body:
             body[field] = chat_body[field]
+
+    if "tools" in chat_body:
+        body["tools"] = _chat_tools_to_response_tools(chat_body["tools"])
+    if "tool_choice" in chat_body:
+        body["tool_choice"] = _chat_tool_choice_to_response_tool_choice(chat_body["tool_choice"])
+    if "response_format" in chat_body:
+        text_options = dict(body.get("text") or {})
+        text_options.update(_chat_response_format_to_text(chat_body["response_format"]))
+        body["text"] = text_options
 
     if "max_completion_tokens" in chat_body:
         body["max_output_tokens"] = chat_body["max_completion_tokens"]
@@ -1121,10 +1235,45 @@ def _extract_response_text(response_body: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_response_tool_calls(response_body: dict[str, Any]) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for item in response_body.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        arguments = item.get("arguments", "")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        call_id = item.get("call_id") or item.get("id") or _new_prefixed_id("call")
+        tool_calls.append(
+            {
+                "id": str(call_id),
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments,
+                },
+            }
+        )
+    return tool_calls
+
+
 def _responses_to_chat_completion(response_body: dict[str, Any], model: str) -> dict[str, Any]:
     response_id = response_body.get("id") or f"chatcmpl-{uuid.uuid4().hex}"
     status = response_body.get("status")
-    finish_reason = "stop" if status in {None, "completed"} else status
+    tool_calls = _extract_response_tool_calls(response_body)
+    finish_reason = "tool_calls" if tool_calls else "stop" if status in {None, "completed"} else status
+    message = {
+        "role": "assistant",
+        "content": _extract_response_text(response_body),
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+        if not message["content"]:
+            message["content"] = None
 
     return {
         "id": response_id,
@@ -1134,10 +1283,7 @@ def _responses_to_chat_completion(response_body: dict[str, Any], model: str) -> 
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": _extract_response_text(response_body),
-                },
+                "message": message,
                 "finish_reason": finish_reason,
             }
         ],
@@ -1167,16 +1313,37 @@ def _chat_stream_chunk(
     }
 
 
+def _chat_tool_call_delta(index: int, item: dict[str, Any], arguments: str | None = None) -> dict[str, Any]:
+    function: dict[str, Any] = {}
+    if "name" in item:
+        function["name"] = str(item.get("name") or "")
+    if arguments is not None:
+        function["arguments"] = arguments
+
+    delta: dict[str, Any] = {
+        "index": index,
+        "type": "function",
+        "function": function,
+    }
+    call_id = item.get("call_id") or item.get("id")
+    if call_id:
+        delta["id"] = str(call_id)
+    return {"tool_calls": [delta]}
+
+
 async def _chat_completion_sse(result: StreamResult, model: str) -> AsyncIterator[str]:
     stream_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     saw_error = False
+    saw_tool_call = False
     success = False
 
     try:
         first_chunk = _chat_stream_chunk(stream_id, created, model, {"role": "assistant"})
         yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
+        tool_call_indexes: dict[str, int] = {}
+        tool_call_argument_keys: set[str] = set()
         data_lines: list[str] = []
         async for line in result.response.aiter_lines():
             if line == "":
@@ -1195,6 +1362,47 @@ async def _chat_completion_sse(result: StreamResult, model: str) -> AsyncIterato
                         if delta:
                             chunk = _chat_stream_chunk(stream_id, created, model, {"content": delta})
                             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "response.output_item.added":
+                        item = event.get("item")
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            saw_tool_call = True
+                            item_key = str(item.get("id") or item.get("call_id") or event.get("output_index"))
+                            index = tool_call_indexes.setdefault(item_key, len(tool_call_indexes))
+                            chunk = _chat_stream_chunk(stream_id, created, model, _chat_tool_call_delta(index, item, ""))
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "response.function_call_arguments.delta":
+                        saw_tool_call = True
+                        item_key = str(event.get("item_id") or event.get("call_id") or event.get("output_index"))
+                        index = tool_call_indexes.setdefault(item_key, len(tool_call_indexes))
+                        item = {"call_id": event["call_id"]} if event.get("call_id") else {}
+                        delta = event.get("delta") or ""
+                        if delta:
+                            tool_call_argument_keys.add(item_key)
+                            chunk = _chat_stream_chunk(stream_id, created, model, _chat_tool_call_delta(index, item, delta))
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "response.function_call_arguments.done":
+                        saw_tool_call = True
+                        item_key = str(event.get("item_id") or event.get("call_id") or event.get("output_index"))
+                        index = tool_call_indexes.setdefault(item_key, len(tool_call_indexes))
+                        arguments = event.get("arguments")
+                        if arguments and item_key not in tool_call_argument_keys:
+                            if not isinstance(arguments, str):
+                                arguments = json.dumps(arguments, ensure_ascii=False)
+                            item = {"call_id": event["call_id"]} if event.get("call_id") else {}
+                            chunk = _chat_stream_chunk(stream_id, created, model, _chat_tool_call_delta(index, item, arguments))
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "response.output_item.done":
+                        item = event.get("item")
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            saw_tool_call = True
+                            item_key = str(item.get("id") or item.get("call_id") or event.get("output_index"))
+                            index = tool_call_indexes.setdefault(item_key, len(tool_call_indexes))
+                            arguments = item.get("arguments")
+                            if arguments and item_key not in tool_call_argument_keys:
+                                if not isinstance(arguments, str):
+                                    arguments = json.dumps(arguments, ensure_ascii=False)
+                                chunk = _chat_stream_chunk(stream_id, created, model, _chat_tool_call_delta(index, item, arguments))
+                                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                     elif event.get("type") == "response.error":
                         saw_error = True
                         error = event.get("error") or {}
@@ -1207,7 +1415,7 @@ async def _chat_completion_sse(result: StreamResult, model: str) -> AsyncIterato
             if line.startswith("data:"):
                 data_lines.append(line[5:].lstrip())
 
-        final_chunk = _chat_stream_chunk(stream_id, created, model, {}, "stop")
+        final_chunk = _chat_stream_chunk(stream_id, created, model, {}, "tool_calls" if saw_tool_call else "stop")
         yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
         success = not saw_error
