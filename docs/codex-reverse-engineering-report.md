@@ -319,6 +319,9 @@ def codex_user_agent(
 | `truncation` | string | 上下文截断策略 |
 | `top_logprobs` | int | top logprobs 数量 |
 | `client_metadata` | object | 客户端元数据 |
+| `include` | array | 额外返回内容项，推理模型常用 `["reasoning.encrypted_content"]` |
+
+> **重要**：部分中转服务（如 anyrouter）对推理模型（如 gpt-5.5）强制要求请求体携带 `include: ["reasoning.encrypted_content"]`，缺失时返回 `400 invalid_responses_request`（错误信息 `invalid codex request`）。这与 TLS 指纹、请求头无关，纯粹是请求体字段校验。对不校验该字段的模型注入此字段也无害。
 
 ### 4.3 input 消息格式
 
@@ -511,6 +514,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{...
 
 | HTTP 状态码 | 业务 code | 说明 |
 |------------|----------|------|
+| 400 | `invalid_responses_request`** | 请求体不符合上游对 Responses API 的校验 |
 | 401 | — | 鉴权失败或 token 过期 |
 | 403 | `codex_access_restricted`* | 客户端版本/身份被拒 |
 | 429 | `usage_limit_reached` | 速率限制 |
@@ -518,6 +522,8 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{...
 | 500 | — | 服务内部错误 |
 
 > *`codex_access_restricted` 是已知的错误代码，某些服务端使用它来强制要求客户端携带特定标识。绕过该检测的关键在于请求体中提供 `client_metadata` 字段。
+
+> **`invalid_responses_request`（错误信息常显示为 "invalid codex request"）是部分中转服务（如 anyrouter）对推理类模型的强校验。实测结论：**对 gpt-5.5 这类推理模型，请求体必须包含 `"include": ["reasoning.encrypted_content"]`，否则一律返回 400。** 此校验与 TLS 指纹、User-Agent、originator、session/thread header 均无关——实测仅凭最简请求体加上该 `include` 字段即可成功调用，无需任何 codex 伪装 header。对不做此校验的模型（如 gpt-5.4/gpt-5.3）注入该字段无副作用。详见 §4.2 的 `include` 字段说明。
 
 ### 响应头追踪
 
@@ -636,7 +642,8 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{...
 |------|---------|------|
 | `Authorization: Bearer` | 必须 | 鉴权令牌 |
 | `Content-Type: application/json` | 必须 | 标准 HTTP |
-| `client_metadata`（请求体） | **高** | 已知多个服务端检测此字段是否存在及内容 |
+| `include: ["reasoning.encrypted_content"]`（请求体） | **关键** | 调用推理模型（如 gpt-5.5）时部分中转必须携带，缺失直接返回 `400 invalid_responses_request`。实测 anyrouter 上加此字段即可成功，连 codex headers 都不需要 |
+| `client_metadata`（请求体） | 中 | 部分服务端会检测，但非 anyrouter gpt-5.5 的关键因素 |
 | `User-Agent` | 中 | 符合 §2 格式可降低异常标记概率 |
 | `originator` | 中 | 固定为已知有效值 |
 | `version` | 中 | 与真实 Codex 版本对齐 |
@@ -661,6 +668,18 @@ Content-Type: application/json
 ```json
 {"client_metadata": {"x-codex-installation-id": "any-non-empty-value"}}
 ```
+
+**推理模型伪装（关键，实测于 anyrouter gpt-5.5）**：
+调用 gpt-5.5 等推理模型时，请求体必须携带 `include`，否则返回 `400 invalid_responses_request`：
+```json
+{
+  "model": "gpt-5.5",
+  "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+  "stream": true,
+  "include": ["reasoning.encrypted_content"]
+}
+```
+> 实测结论：在 anyrouter 上，仅添加 `include` 字段即可成功调用 gpt-5.5（流式），无需 codex headers、无需 TLS 指纹对齐。对不校验该字段的模型（如 gpt-5.4）注入此字段无害。早期"gpt-5.5 需要 Rust TLS 指纹"的推测已被推翻——真正原因是缺少 `include`。
 
 **完整伪装（模拟真实 Codex CLI）**：
 - 添加 `originator: codex_cli_rs`

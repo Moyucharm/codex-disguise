@@ -60,6 +60,8 @@ METADATA_HEADER_KEYS = (
     "x-codex-turn-metadata",
 )
 
+REQUIRED_RESPONSES_INCLUDE = "reasoning.encrypted_content"
+
 RETRYABLE_STATUS_CODES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 
 MODELS = [
@@ -572,6 +574,24 @@ def _ensure_client_metadata(
             metadata.setdefault(name, value)
 
     body["client_metadata"] = metadata
+    return body
+
+
+def _ensure_responses_include(body: dict[str, Any]) -> dict[str, Any]:
+    """确保请求体携带 reasoning.encrypted_content。
+
+    部分上游（如 anyrouter 的 gpt-5.5 推理模型）会校验 include 字段，
+    缺失时返回 400 invalid_codex_request。对不校验的模型注入此字段无害。
+    """
+    body = dict(body)
+    include = body.get("include")
+    if not isinstance(include, list):
+        include = []
+    else:
+        include = list(include)
+    if REQUIRED_RESPONSES_INCLUDE not in include:
+        include.append(REQUIRED_RESPONSES_INCLUDE)
+    body["include"] = include
     return body
 
 
@@ -1605,6 +1625,7 @@ async def _chat_completion_sse(result: StreamResult, model: str) -> AsyncIterato
 async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
     state = _get_gateway_state()
     body = _ensure_client_metadata(request, body, state)
+    body = _ensure_responses_include(body)
 
     if body.get("stream") is True:
         stream_result = await _open_stream_with_failover(request, body)
@@ -1691,6 +1712,7 @@ async def chat_completions(request: Request):
         chat_body = await _read_json_body(request)
         responses_body = _chat_to_responses_body(chat_body)
         responses_body = _ensure_client_metadata(request, responses_body, _get_gateway_state())
+        responses_body = _ensure_responses_include(responses_body)
 
         if responses_body.get("stream") is True:
             stream_result = await _open_stream_with_failover(request, responses_body)
