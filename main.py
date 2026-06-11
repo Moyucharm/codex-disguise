@@ -326,6 +326,8 @@ def _init_db() -> None:
             conn.execute("ALTER TABLE channels ADD COLUMN upstream_api_key TEXT")
             conn.execute("UPDATE channels SET upstream_api_key = downstream_api_key WHERE downstream_api_key IS NOT NULL")
             conn.execute("UPDATE channels SET downstream_api_key = NULL WHERE downstream_api_key IS NOT NULL")
+        if "supported_models" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN supported_models TEXT")
         _ensure_gateway_state(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         if channel_count == 0:
@@ -333,10 +335,10 @@ def _init_db() -> None:
             now = _utc_now()
             conn.execute(
                 """
-                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, now, now),
+                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, None, now, now),
             )
             conn.execute(
                 """
@@ -646,7 +648,7 @@ def _refresh_expired_cooldowns(conn: sqlite3.Connection) -> None:
     )
 
 
-def _select_channels(request: Request) -> list[dict[str, Any]]:
+def _select_channels(request: Request, model: str | None = None) -> list[dict[str, Any]]:
     client_token = _request_bearer_token(request)
     with _connect_db() as conn:
         _refresh_expired_cooldowns(conn)
@@ -655,7 +657,7 @@ def _select_channels(request: Request) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT
-                c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
+                c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
                 c.created_at, c.updated_at,
                 COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
                 r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -675,6 +677,15 @@ def _select_channels(request: Request) -> list[dict[str, Any]]:
             and not _channel_accepts_client_key(channel, client_token)
         ):
             continue
+        if model:
+            raw = channel.get("supported_models")
+            if raw:
+                try:
+                    allowed_models = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if model not in allowed_models:
+                    continue
         groups.setdefault(int(channel["priority"]), []).append(channel)
 
     if rows and not groups:
@@ -725,6 +736,11 @@ def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection 
     cooldown_until = channel.get("cooldown_until")
     last_success_at = channel.get("last_success_at")
     last_failure_at = channel.get("last_failure_at")
+    raw_models = channel.get("supported_models")
+    try:
+        parsed_models = json.loads(raw_models) if raw_models else None
+    except (json.JSONDecodeError, TypeError):
+        parsed_models = None
     result = {
         "id": channel["id"],
         "name": channel["name"],
@@ -733,6 +749,7 @@ def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection 
         "enabled": bool(channel["enabled"]),
         "has_upstream_api_key": bool(channel.get("upstream_api_key")),
         "has_downstream_api_key": bool(channel.get("downstream_api_key")),
+        "supported_models": parsed_models,
         "consecutive_failures": int(channel.get("consecutive_failures") or 0),
         "cooldown_until": _ts_to_iso(float(cooldown_until)) if cooldown_until is not None else None,
         "last_success_at": _ts_to_iso(float(last_success_at)) if last_success_at is not None else None,
@@ -749,7 +766,7 @@ def _get_channel_row(conn: sqlite3.Connection, channel_id: str) -> sqlite3.Row:
     row = conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -770,7 +787,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -782,7 +799,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, Any]:
-    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key"}
+    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key", "supported_models"}
     unknown = sorted(set(body) - allowed)
     if unknown:
         raise GatewayError(f"Unknown channel fields: {', '.join(unknown)}", 400, "unknown_channel_fields")
@@ -831,6 +848,24 @@ def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, 
         values["downstream_api_key"] = str(key).strip() if key is not None and str(key).strip() else None
     elif not partial:
         values["downstream_api_key"] = None
+
+    if "supported_models" in body:
+        raw = body["supported_models"]
+        if raw is None:
+            values["supported_models"] = None
+        elif isinstance(raw, list):
+            if not raw:
+                raise GatewayError("supported_models must not be empty", 400, "invalid_supported_models", param="supported_models")
+            models = []
+            for item in raw:
+                if not isinstance(item, str) or not item.strip():
+                    raise GatewayError("Each model in supported_models must be a non-empty string", 400, "invalid_supported_models", param="supported_models")
+                models.append(item.strip())
+            values["supported_models"] = json.dumps(models)
+        else:
+            raise GatewayError("supported_models must be an array or null", 400, "invalid_supported_models", param="supported_models")
+    elif not partial:
+        values["supported_models"] = None
 
     return values
 
@@ -900,7 +935,7 @@ def _upstream_error_from_bytes(
 
 
 async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -> UpstreamResult:
-    channels = _select_channels(request)
+    channels = _select_channels(request, body.get("model"))
     if not channels:
         raise GatewayError("No available channels", 503, "no_available_channels")
 
@@ -979,7 +1014,7 @@ async def _close_upstream_stream(stream_context: Any) -> None:
 
 async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> StreamResult | JSONResponse:
     try:
-        channels = _select_channels(request)
+        channels = _select_channels(request, body.get("model"))
     except GatewayError as exc:
         return _gateway_error_response(exc)
     if not channels:
@@ -1305,7 +1340,7 @@ def _chat_to_responses_body(chat_body: dict[str, Any]) -> dict[str, Any]:
             raise GatewayError("Unsupported message role", 400, "unsupported_message_role", param="messages.role")
 
     body: dict[str, Any] = {
-        "model": chat_body.get("model", "gpt-5.5"),
+        "model": chat_body.get("model", "gpt-5.4"),
         "input": input_items,
         "stream": bool(chat_body.get("stream", False)),
     }
@@ -1746,8 +1781,8 @@ async def create_channel(request: Request):
     with _connect_db() as conn:
         conn.execute(
             """
-            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -1757,6 +1792,7 @@ async def create_channel(request: Request):
                 values["enabled"],
                 values["upstream_api_key"],
                 values["downstream_api_key"],
+                values["supported_models"],
                 now,
                 now,
             ),
@@ -1863,7 +1899,7 @@ async def reset_channel_runtime(request: Request, channel_id: str):
 async def test_channel(request: Request, channel_id: str):
     _require_admin(request)
     body = await _read_json_body(request)
-    model = str(body.get("model") or "gpt-5.5").strip() or "gpt-5.5"
+    model = str(body.get("model") or "gpt-5.4").strip() or "gpt-5.4"
     with _connect_db() as conn:
         channel = dict(_get_channel_row(conn, channel_id))
 

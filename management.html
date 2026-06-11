@@ -449,10 +449,11 @@
     .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 70px; }
     .channel-table th:nth-child(5), .channel-table td:nth-child(5) { width: 92px; }
     .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 86px; }
-    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 98px; }
-    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 58px; }
-    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 88px; }
-    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 194px; }
+    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 120px; }
+    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 98px; }
+    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 58px; }
+    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 88px; }
+    .channel-table th:nth-child(11), .channel-table td:nth-child(11) { width: 194px; }
 
     th, td {
       padding: 11px 12px;
@@ -665,6 +666,24 @@
 
     .checkbox-line input { width: 16px; height: 16px; min-height: 0; }
 
+    .model-checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      padding: 6px 0;
+    }
+
+    .model-checks label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .model-checks input { width: 15px; height: 15px; min-height: 0; }
+
     .dialog-footer {
       display: flex;
       justify-content: flex-end;
@@ -849,6 +868,7 @@
                   <th>优先级</th>
                   <th>上游 Key</th>
                   <th>下游 Key</th>
+                  <th>支持模型</th>
                   <th>24h 成功率</th>
                   <th>失败</th>
                   <th>更新时间</th>
@@ -933,6 +953,11 @@
             <input id="clearChannelKey" type="checkbox">
             <span>清除已保存下游 API Key</span>
           </label>
+          <label class="wide">
+            <span class="field-label">支持的模型</span>
+            <div class="model-checks" id="channelModelChecks"></div>
+            <div class="field-help">勾选此渠道支持的模型。未勾选的模型不会路由到此渠道。至少选择一个。</div>
+          </label>
         </div>
       </div>
       <div class="dialog-footer">
@@ -957,7 +982,7 @@
           <label class="wide">
             <span class="field-label">测试模型</span>
             <select id="testModel"></select>
-            <div class="field-help">默认使用 gpt-5.5。测试超时 60 秒，空响应或空内容会判定为失败。</div>
+            <div class="field-help">默认使用 gpt-5.4。测试超时 60 秒，空响应或空内容会判定为失败。</div>
           </label>
         </div>
         <div class="test-result" id="testResult"></div>
@@ -1030,7 +1055,7 @@
           "channelKeyAlert", "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
-          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "saveChannel",
+          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelModelChecks", "saveChannel",
           "testDialog", "testForm", "testDialogTitle", "testChannelName", "testModel", "testResult", "runChannelTest"
         ]) {
           dom[id] = document.getElementById(id);
@@ -1332,7 +1357,7 @@
         renderChannelKeyAlert(metrics);
 
         if (!state.authenticated) {
-          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">需要 Admin Token</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="11" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
 
@@ -1347,13 +1372,16 @@
         });
 
         if (!rows.length) {
-          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">没有匹配渠道</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="11" class="empty">没有匹配渠道</td></tr>`;
           return;
         }
 
         dom.channelRows.innerHTML = rows.map((channel) => {
           const id = escapeHtml(channel.id);
           const rate = Number(channel.success_rate_24h || 0);
+          const modelsHtml = channel.supported_models
+            ? channel.supported_models.map((m) => `<span class="badge idle">${escapeHtml(m)}</span>`).join(" ")
+            : badge("全部", "ok");
           return `
             <tr>
               <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono compact-id" title="${id}">${id}</div></td>
@@ -1362,6 +1390,7 @@
               <td>${escapeHtml(channel.priority)}</td>
               <td>${channel.has_upstream_api_key ? badge("已保存", "info") : `${badge("缺失", "bad")}<div class="muted">不可调用</div>`}</td>
               <td>${channel.has_downstream_api_key ? badge("专属", "info") : badge("全局", "idle")}</td>
+              <td>${modelsHtml}</td>
               <td>${badge(`${rate}%`, rate >= 95 ? "ok" : rate > 0 ? "warn" : "idle")}</td>
               <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
               <td>${escapeHtml(formatDate(channel.updated_at))}</td>
@@ -1459,6 +1488,13 @@
         dom.clearChannelKey.checked = false;
         dom.clearUpstreamKeyWrap.style.display = channel ? "flex" : "none";
         dom.clearKeyWrap.style.display = channel ? "flex" : "none";
+        const allModels = state.models.map((m) => m.id).filter(Boolean);
+        if (!allModels.length) allModels.push("gpt-5.5", "gpt-5.4", "gpt-5.3-codex");
+        const selected = channel?.supported_models;
+        dom.channelModelChecks.innerHTML = allModels.map((id) => {
+          const checked = !selected || selected.includes(id) ? "checked" : "";
+          return `<label><input type="checkbox" value="${escapeHtml(id)}" ${checked}> ${escapeHtml(id)}</label>`;
+        }).join("");
         dom.channelDialog.showModal();
         dom.channelName.focus();
       }
@@ -1468,17 +1504,18 @@
         state.testResult = null;
         dom.testDialogTitle.textContent = `测试渠道：${channel.name}`;
         dom.testChannelName.value = `${channel.name} (${channel.id})`;
-        renderModelOptions();
+        renderModelOptions(channel.supported_models);
         renderTestResult();
         dom.testDialog.showModal();
         dom.testModel.focus();
       }
 
-      function renderModelOptions() {
+      function renderModelOptions(supportedModels) {
         const modelIds = state.models.map((model) => model.id).filter(Boolean);
         if (!modelIds.includes("gpt-5.5")) modelIds.unshift("gpt-5.5");
-        dom.testModel.innerHTML = modelIds.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
-        dom.testModel.value = "gpt-5.5";
+        const filtered = supportedModels ? modelIds.filter((id) => supportedModels.includes(id)) : modelIds;
+        dom.testModel.innerHTML = filtered.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
+        if (filtered.length) dom.testModel.value = filtered[0];
       }
 
       async function runChannelTest(event) {
@@ -1491,12 +1528,12 @@
           const result = await request(`/admin/channels/${encodeURIComponent(state.testingId)}/test`, {
             method: "POST",
             admin: true,
-            body: { model: dom.testModel.value || "gpt-5.5" }
+            body: { model: dom.testModel.value || "gpt-5.4" }
           });
           state.testResult = result;
           renderTestResult();
         } catch (error) {
-          state.testResult = { success: false, message: error.message, latency_ms: 0, status_code: null, model: dom.testModel.value || "gpt-5.5" };
+          state.testResult = { success: false, message: error.message, latency_ms: 0, status_code: null, model: dom.testModel.value || "gpt-5.4" };
           renderTestResult();
         } finally {
           setBusy(false);
@@ -1520,7 +1557,7 @@
         dom.testResult.innerHTML = `
           <div class="test-result-title">${success ? "测试成功" : "测试失败"}</div>
           <div class="test-result-grid">
-            <div><span class="muted">模型</span><br><span class="mono">${escapeHtml(result.model || dom.testModel.value || "gpt-5.5")}</span></div>
+            <div><span class="muted">模型</span><br><span class="mono">${escapeHtml(result.model || dom.testModel.value || "gpt-5.4")}</span></div>
             <div><span class="muted">耗时</span><br><span class="mono">${escapeHtml(result.latency_ms ?? 0)} ms</span></div>
             <div><span class="muted">HTTP 状态</span><br><span class="mono">${escapeHtml(result.status_code ?? "-")}</span></div>
             <div class="test-result-message"><span class="muted">结果</span><br>${escapeHtml(result.message || "-")}</div>
@@ -1540,6 +1577,12 @@
           showNotice("上游地址必须以 http:// 或 https:// 开头", "error");
           return;
         }
+        const checkedModels = [...dom.channelModelChecks.querySelectorAll("input:checked")].map((el) => el.value);
+        if (!checkedModels.length) {
+          showNotice("至少选择一个模型", "error");
+          return;
+        }
+        body.supported_models = checkedModels;
 
         const upstreamKeyValue = dom.channelUpstreamKey.value.trim();
         const downstreamKeyValue = dom.channelDownstreamKey.value.trim();
