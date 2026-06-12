@@ -520,10 +520,14 @@
     .toggle {
       display: inline-flex;
       align-items: center;
+      justify-content: flex-start;
       width: 42px;
       height: 24px;
+      min-height: 0;
+      flex: 0 0 auto;
       border-radius: 999px;
       padding: 3px;
+      gap: 0;
       background: #d6d0c8;
       border: 0;
       vertical-align: middle;
@@ -539,7 +543,9 @@
       transition: transform 0.16s ease;
     }
 
+    .toggle:hover { background: #cbc4ba; }
     .toggle.on { background: var(--accent); }
+    .toggle.on:hover { background: var(--accent-strong); }
     .toggle.on::after { transform: translateX(18px); }
 
     .row-actions {
