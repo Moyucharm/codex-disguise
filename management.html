@@ -51,18 +51,24 @@
     [hidden] { display: none !important; }
 
     button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--surface);
       color: var(--text);
-      min-height: 36px;
-      padding: 0 12px;
+      min-height: 34px;
+      padding: 0 14px;
+      line-height: 1;
+      font-weight: 500;
       cursor: pointer;
-      transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+      transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
     }
 
-    button:hover { border-color: var(--line-strong); transform: translateY(-1px); }
-    button:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+    button:hover { border-color: var(--line-strong); background: var(--surface-soft); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
 
     input, select, textarea {
       width: 100%;
@@ -404,12 +410,13 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      min-height: 32px;
+      min-height: 30px;
       padding: 0 10px;
       border-radius: 999px;
       border: 1px solid var(--line);
       background: var(--surface);
       color: var(--muted);
+      line-height: 1;
       white-space: nowrap;
     }
 
@@ -422,12 +429,12 @@
     .chip-count {
       display: inline-grid;
       place-items: center;
-      min-width: 22px;
-      height: 22px;
+      min-width: 20px;
+      height: 20px;
       border-radius: 999px;
       background: rgba(0, 0, 0, 0.08);
       padding: 0 6px;
-      font-size: 12px;
+      font-size: 11px;
     }
 
     .table-wrap { overflow: auto; }
@@ -494,10 +501,13 @@
     .status-pill {
       display: inline-flex;
       align-items: center;
-      min-height: 28px;
-      padding: 0 9px;
+      justify-content: center;
+      min-height: 22px;
+      padding: 1px 9px;
       border-radius: 999px;
-      font-weight: 650;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
       white-space: nowrap;
     }
 
@@ -541,9 +551,10 @@
     }
 
     .row-actions button {
-      min-width: 36px;
-      padding: 0 8px;
-      min-height: 32px;
+      min-width: 0;
+      padding: 0 10px;
+      min-height: 30px;
+      font-size: 13px;
     }
 
     .test-result {
