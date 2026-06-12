@@ -971,6 +971,11 @@
             <span>清除已保存下游 API Key</span>
           </label>
           <label class="wide">
+            <span class="field-label">HTTP 代理（可选）</span>
+            <input id="channelProxyUrl" type="url" autocomplete="off" spellcheck="false" placeholder="http://proxy.example.com:8080">
+            <div class="field-help">本渠道调用上游时使用的 HTTP/HTTPS 代理，留空表示直连。</div>
+          </label>
+          <label class="wide">
             <span class="field-label">支持的模型</span>
             <div class="model-checks" id="channelModelChecks"></div>
             <div class="field-help">勾选此渠道支持的模型。未勾选的模型不会路由到此渠道。至少选择一个。</div>
@@ -1072,7 +1077,7 @@
           "channelKeyAlert", "channelRows", "modelGrid", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
-          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelModelChecks", "saveChannel",
+          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelProxyUrl", "channelModelChecks", "saveChannel",
           "testDialog", "testForm", "testDialogTitle", "testChannelName", "testModel", "testResult", "runChannelTest"
         ]) {
           dom[id] = document.getElementById(id);
@@ -1501,6 +1506,7 @@
         dom.channelEnabled.value = channel?.enabled === false ? "false" : "true";
         dom.channelUpstreamKey.value = "";
         dom.channelDownstreamKey.value = "";
+        dom.channelProxyUrl.value = channel?.proxy_url || "";
         dom.clearChannelUpstreamKey.checked = false;
         dom.clearChannelKey.checked = false;
         dom.clearUpstreamKeyWrap.style.display = channel ? "flex" : "none";
@@ -1600,6 +1606,13 @@
           return;
         }
         body.supported_models = checkedModels;
+
+        const proxyValue = dom.channelProxyUrl.value.trim();
+        if (proxyValue && !proxyValue.startsWith("http://") && !proxyValue.startsWith("https://")) {
+          showNotice("HTTP 代理地址必须以 http:// 或 https:// 开头", "error");
+          return;
+        }
+        body.proxy_url = proxyValue || null;
 
         const upstreamKeyValue = dom.channelUpstreamKey.value.trim();
         const downstreamKeyValue = dom.channelDownstreamKey.value.trim();

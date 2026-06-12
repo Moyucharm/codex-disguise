@@ -330,6 +330,8 @@ def _init_db() -> None:
             conn.execute("UPDATE channels SET downstream_api_key = NULL WHERE downstream_api_key IS NOT NULL")
         if "supported_models" not in channel_columns:
             conn.execute("ALTER TABLE channels ADD COLUMN supported_models TEXT")
+        if "proxy_url" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN proxy_url TEXT")
         _ensure_gateway_state(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         if channel_count == 0:
@@ -337,10 +339,10 @@ def _init_db() -> None:
             now = _utc_now()
             conn.execute(
                 """
-                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, proxy_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, None, now, now),
+                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, None, None, now, now),
             )
             conn.execute(
                 """
@@ -363,10 +365,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.client_api_key = client_api_key.value
     app.state.client_api_key_source = client_api_key.source
     app.state.http_client = httpx.AsyncClient(timeout=TIMEOUT)
+    app.state.proxy_clients = {}
     try:
         yield
     finally:
         await app.state.http_client.aclose()
+        for proxy_client in app.state.proxy_clients.values():
+            await proxy_client.aclose()
 
 
 app = FastAPI(title="codex2api", lifespan=lifespan)
@@ -520,6 +525,27 @@ def _upstream_responses_url(channel: dict[str, Any]) -> str:
     if upstream_url.endswith("/responses"):
         return upstream_url
     return f"{upstream_url}/responses"
+
+
+def _client_for_channel(request: Request, channel: dict[str, Any]) -> httpx.AsyncClient:
+    """返回用于该渠道的 HTTP 客户端。
+
+    无 proxy_url 时复用全局客户端；配置了代理时按代理地址懒加载并缓存
+    一个绑定该代理的客户端（httpx 仅支持创建客户端时绑定代理，不支持按请求设置，
+    且 proxy= 参数需 httpx>=0.26）。
+    事件循环为单线程，check-and-set 之间没有 await，无并发竞争。
+    """
+    proxy = channel.get("proxy_url")
+    if not isinstance(proxy, str) or not proxy.strip():
+        return request.app.state.http_client
+
+    proxy = proxy.strip()
+    clients: dict[str, httpx.AsyncClient] = request.app.state.proxy_clients
+    client = clients.get(proxy)
+    if client is None:
+        client = httpx.AsyncClient(timeout=TIMEOUT, proxy=proxy)
+        clients[proxy] = client
+    return client
 
 
 def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, Any]) -> dict[str, str]:
@@ -770,6 +796,7 @@ def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection 
         "has_upstream_api_key": bool(channel.get("upstream_api_key")),
         "has_downstream_api_key": bool(channel.get("downstream_api_key")),
         "supported_models": parsed_models,
+        "proxy_url": channel.get("proxy_url"),
         "consecutive_failures": int(channel.get("consecutive_failures") or 0),
         "cooldown_until": _ts_to_iso(float(cooldown_until)) if cooldown_until is not None else None,
         "last_success_at": _ts_to_iso(float(last_success_at)) if last_success_at is not None else None,
@@ -786,7 +813,7 @@ def _get_channel_row(conn: sqlite3.Connection, channel_id: str) -> sqlite3.Row:
     row = conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models, c.proxy_url,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -807,7 +834,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models, c.proxy_url,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -819,7 +846,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, Any]:
-    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key", "supported_models"}
+    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key", "supported_models", "proxy_url"}
     unknown = sorted(set(body) - allowed)
     if unknown:
         raise GatewayError(f"Unknown channel fields: {', '.join(unknown)}", 400, "unknown_channel_fields")
@@ -886,6 +913,23 @@ def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, 
             raise GatewayError("supported_models must be an array or null", 400, "invalid_supported_models", param="supported_models")
     elif not partial:
         values["supported_models"] = None
+
+    if "proxy_url" in body:
+        raw = body["proxy_url"]
+        if raw is None or not str(raw).strip():
+            values["proxy_url"] = None
+        else:
+            proxy_url = str(raw).strip()
+            if not proxy_url.startswith(("http://", "https://")):
+                raise GatewayError(
+                    "Channel proxy_url must start with http:// or https://",
+                    400,
+                    "invalid_proxy_url",
+                    param="proxy_url",
+                )
+            values["proxy_url"] = proxy_url
+    elif not partial:
+        values["proxy_url"] = None
 
     return values
 
@@ -960,7 +1004,6 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
         raise GatewayError("No available channels", 503, "no_available_channels")
 
     state = _get_gateway_state()
-    client: httpx.AsyncClient = request.app.state.http_client
     last_response: httpx.Response | None = None
     last_channel: dict[str, Any] | None = None
     last_error_message = "All channels failed"
@@ -975,6 +1018,7 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
                 missing_key_error = exc
                 continue
             raise
+        client = _client_for_channel(request, channel)
         started_at = time.perf_counter()
         try:
             response = await client.post(_upstream_responses_url(channel), headers=headers, json=body)
@@ -1041,7 +1085,6 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
         return _error_response("No available channels", 503, "no_available_channels")
 
     state = _get_gateway_state()
-    client: httpx.AsyncClient = request.app.state.http_client
     last_error_response: JSONResponse | None = None
     last_error_message = "All channels failed"
     missing_key_error: GatewayError | None = None
@@ -1055,6 +1098,7 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
                 missing_key_error = exc
                 continue
             raise
+        client = _client_for_channel(request, channel)
         started_at = time.perf_counter()
         try:
             stream_context, response = await _open_upstream_stream(client, channel, headers, body)
@@ -1298,8 +1342,8 @@ async def create_channel(request: Request):
     with _connect_db() as conn:
         conn.execute(
             """
-            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, proxy_url, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -1310,6 +1354,7 @@ async def create_channel(request: Request):
                 values["upstream_api_key"],
                 values["downstream_api_key"],
                 values["supported_models"],
+                values["proxy_url"],
                 now,
                 now,
             ),
@@ -1432,7 +1477,7 @@ async def test_channel(request: Request, channel_id: str):
     started_at = time.perf_counter()
     try:
         headers = _codex_headers(request, _get_gateway_state(), channel)
-        response = await request.app.state.http_client.post(
+        response = await _client_for_channel(request, channel).post(
             _upstream_responses_url(channel),
             headers=headers,
             json={"model": model, "input": "ping", "max_output_tokens": 16},
