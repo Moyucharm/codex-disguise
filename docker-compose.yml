@@ -1,0 +1,11 @@
+services:
+  codex-disguise:
+    image: ghcr.io/moyucharm/codex-disguise:latest
+    container_name: codex-disguise
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
