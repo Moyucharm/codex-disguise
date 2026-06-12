@@ -1048,6 +1048,14 @@
         busy: false
       };
 
+      const busyActions = new Set([
+        "toggle-channel",
+        "reset-runtime",
+        "delete-channel",
+        "reset-fingerprint",
+        "refresh-models"
+      ]);
+
       const dom = {};
 
       document.addEventListener("DOMContentLoaded", init);
@@ -1059,6 +1067,15 @@
         return "http://localhost:8000";
       }
 
+      function isSameOriginApiBase(apiBase = state.apiBase) {
+        if (location.protocol !== "http:" && location.protocol !== "https:") return false;
+        try {
+          return new URL(apiBase, location.href).origin === location.origin;
+        } catch (_) {
+          return false;
+        }
+      }
+
       function init() {
         cacheDom();
         dom.loginApiBase.value = state.apiBase;
@@ -1067,6 +1084,7 @@
         dom.apiBase.value = state.apiBase;
         bindEvents();
         render();
+        restoreSavedSession();
       }
 
       function cacheDom() {
@@ -1128,13 +1146,47 @@
       }
 
       function applyConnection() {
+        if (state.busy) return;
         state.apiBase = dom.apiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
         localStorage.setItem(storageKeys.apiBase, state.apiBase);
         refreshAll();
       }
 
+      async function restoreSavedSession() {
+        if (!state.adminToken) return;
+        if (!isSameOriginApiBase()) {
+          showLoginNotice("已保存跨域 API Base。为避免泄露 Admin Token，请手动登录", "");
+          return;
+        }
+        setLoginBusy(true);
+        showLoginNotice("正在恢复已保存登录", "");
+        try {
+          await request("/admin/session", { admin: true, skipAuthRedirect: true });
+          state.authenticated = true;
+          state.rememberToken = true;
+          dom.loginRememberToken.checked = true;
+          dom.apiBase.value = state.apiBase;
+          dom.loginView.hidden = true;
+          dom.appShell.hidden = false;
+          await refreshAll({ force: true });
+        } catch (error) {
+          state.authenticated = false;
+          if (error.status === 401) {
+            state.adminToken = "";
+            localStorage.removeItem(storageKeys.adminToken);
+            dom.loginAdminToken.value = "";
+            showLoginNotice("已保存的 Admin Token 无效，请重新登录", "error");
+          } else {
+            showLoginNotice(`自动登录失败：${error.message}`, "error");
+          }
+        } finally {
+          setLoginBusy(false);
+        }
+      }
+
       async function login(event) {
         event.preventDefault();
+        if (dom.loginButton.disabled) return;
         state.apiBase = dom.loginApiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
         state.adminToken = dom.loginAdminToken.value.trim();
         state.rememberToken = dom.loginRememberToken.checked;
@@ -1147,13 +1199,10 @@
         showLoginNotice("正在验证", "");
         try {
           localStorage.setItem(storageKeys.apiBase, state.apiBase);
-          if (state.rememberToken) {
-            localStorage.setItem(storageKeys.adminToken, state.adminToken);
-          } else {
-            localStorage.removeItem(storageKeys.adminToken);
-          }
-          await request("/admin/session", { admin: true });
+          localStorage.removeItem(storageKeys.adminToken);
+          await request("/admin/session", { admin: true, skipAuthRedirect: true });
           state.authenticated = true;
+          persistConnection();
           dom.apiBase.value = state.apiBase;
           dom.loginView.hidden = true;
           dom.appShell.hidden = false;
@@ -1192,32 +1241,35 @@
         }
       }
 
-      async function refreshAll() {
+      async function refreshAll(options = {}) {
         if (!state.authenticated) return;
+        if (state.busy && !options.force) return;
         persistConnection();
         setBusy(true);
         showNotice("正在刷新", "");
         const errors = [];
-
-        await Promise.all([
-          loadPublic("/health", (data) => { state.health = data; }, errors, "health"),
-          loadPublic("/v1/config", (data) => { state.config = data; }, errors, "config"),
-          loadPublic("/v1/models", (data) => { state.models = Array.isArray(data.data) ? data.data : []; }, errors, "models")
-        ]);
-
         try {
-          await loadChannels();
-        } catch (error) {
-          state.channels = [];
-          errors.push(`admin: ${error.message}`);
-        }
+          await Promise.all([
+            loadPublic("/health", (data) => { state.health = data; }, errors, "health"),
+            loadAdmin("/admin/config", (data) => { state.config = data; }, errors, "config"),
+            loadPublic("/v1/models", (data) => { state.models = Array.isArray(data.data) ? data.data : []; }, errors, "models")
+          ]);
 
-        render();
-        setBusy(false);
-        if (errors.length) {
-          showNotice(errors.join("；"), "error");
-        } else {
-          showNotice("已刷新", "success");
+          try {
+            await loadChannels();
+          } catch (error) {
+            state.channels = [];
+            errors.push(`admin: ${error.message}`);
+          }
+
+          render();
+          if (errors.length) {
+            showNotice(errors.join("；"), "error");
+          } else {
+            showNotice("已刷新", "success");
+          }
+        } finally {
+          setBusy(false);
         }
       }
 
@@ -1229,6 +1281,15 @@
         }
       }
 
+      async function loadAdmin(path, assign, errors, label) {
+        try {
+          assign(await request(path, { admin: true }));
+        } catch (error) {
+          if (label === "config") state.config = null;
+          errors.push(`${label}: ${error.message}`);
+        }
+      }
+
       async function loadChannels() {
         const data = await request("/admin/channels", { admin: true });
         state.channels = Array.isArray(data.data) ? data.data : [];
@@ -1236,18 +1297,31 @@
 
       async function request(path, options = {}) {
         const headers = {};
-        const init = { method: options.method || "GET", headers };
         if (options.body !== undefined) {
           headers["Content-Type"] = "application/json";
-          init.body = JSON.stringify(options.body);
         }
         if (options.admin) {
           if (!state.adminToken) throw new Error("缺少 Admin Token");
           headers.Authorization = `Bearer ${state.adminToken}`;
         }
 
-        const response = await fetch(`${state.apiBase}${path}`, init);
-        const text = await response.text();
+        const timeoutMs = options.timeoutMs ?? 30000;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        const init = { method: options.method || "GET", headers, signal: controller.signal, cache: "no-store" };
+        if (options.body !== undefined) init.body = JSON.stringify(options.body);
+
+        let response;
+        let text = "";
+        try {
+          response = await fetch(`${state.apiBase}${path}`, init);
+          text = await response.text();
+        } catch (error) {
+          if (error.name === "AbortError") throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+          throw new Error(`网络请求失败：${error.message || "无法连接后端"}`);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
         let data = null;
         if (text) {
           try { data = JSON.parse(text); } catch (_) { data = text; }
@@ -1257,9 +1331,28 @@
           const error = new Error(message);
           error.status = response.status;
           error.data = data;
+          if (response.status === 401 && options.admin && !options.skipAuthRedirect) {
+            handleAuthExpired(message);
+          }
           throw error;
         }
         return data;
+      }
+
+      function handleAuthExpired(message) {
+        state.authenticated = false;
+        state.adminToken = "";
+        state.health = null;
+        state.config = null;
+        state.models = [];
+        state.channels = [];
+        localStorage.removeItem(storageKeys.adminToken);
+        dom.loginAdminToken.value = "";
+        dom.loginApiBase.value = state.apiBase;
+        dom.appShell.hidden = true;
+        dom.loginView.hidden = false;
+        render();
+        showLoginNotice(message || "登录已失效，请重新登录", "error");
       }
 
       function setBusy(value) {
@@ -1325,7 +1418,7 @@
       function renderSummary(metrics) {
         const healthText = state.health?.status || "unknown";
         dom.summaryGrid.innerHTML = [
-          metricHtml("服务状态", healthText, `数据库：${state.health?.database_path || "-"}`),
+          metricHtml("服务状态", healthText, `数据库：${state.config?.database_path || "-"}`),
           metricHtml("渠道", String(metrics.enabledChannels), `总数 ${metrics.totalChannels}，禁用 ${metrics.disabled}`),
           metricHtml("24h 成功率", `${metrics.successRate}%`, `${metrics.success24h} 成功 / ${metrics.failure24h} 失败`),
           metricHtml("冷却中", String(metrics.cooldown), `连续失败阈值 ${state.config?.failure_threshold ?? "-"}`)
@@ -1481,12 +1574,21 @@
       }
 
       async function handleAction(action, id) {
+        if (action === "close-dialog") {
+          dom.channelDialog.close();
+          return;
+        }
+        if (action === "close-test-dialog") {
+          dom.testDialog.close();
+          return;
+        }
+        if (state.busy) return;
+        const useBusyLock = busyActions.has(action);
         try {
+          if (useBusyLock) setBusy(true);
           if (action === "new-channel") openChannelDialog();
           if (action === "edit-channel") openChannelDialog(findChannel(id));
-          if (action === "close-dialog") dom.channelDialog.close();
           if (action === "test-channel") openTestDialog(findChannel(id));
-          if (action === "close-test-dialog") dom.testDialog.close();
           if (action === "toggle-channel") await toggleChannel(id);
           if (action === "reset-runtime") await resetRuntime(id);
           if (action === "delete-channel") await deleteChannel(id);
@@ -1494,6 +1596,8 @@
           if (action === "refresh-models") await refreshModels();
         } catch (error) {
           showNotice(error.message, "error");
+        } finally {
+          if (useBusyLock) setBusy(false);
         }
       }
 
@@ -1543,7 +1647,7 @@
 
       async function runChannelTest(event) {
         event.preventDefault();
-        if (!state.testingId) return;
+        if (!state.testingId || state.busy) return;
         setBusy(true);
         state.testResult = { pending: true, message: "正在测试，最多等待 60 秒" };
         renderTestResult();
@@ -1551,6 +1655,7 @@
           const result = await request(`/admin/channels/${encodeURIComponent(state.testingId)}/test`, {
             method: "POST",
             admin: true,
+            timeoutMs: 70000,
             body: { model: dom.testModel.value || "gpt-5.4" }
           });
           state.testResult = result;
@@ -1590,6 +1695,7 @@
 
       async function saveChannel(event) {
         event.preventDefault();
+        if (state.busy) return;
         const body = {
           name: dom.channelName.value.trim(),
           upstream_url: dom.channelUrl.value.trim(),
@@ -1616,21 +1722,28 @@
 
         const upstreamKeyValue = dom.channelUpstreamKey.value.trim();
         const downstreamKeyValue = dom.channelDownstreamKey.value.trim();
-        if (state.editingId) {
-          if (dom.clearChannelUpstreamKey.checked) body.upstream_api_key = null;
-          if (upstreamKeyValue) body.upstream_api_key = upstreamKeyValue;
-          if (dom.clearChannelKey.checked) body.downstream_api_key = null;
-          if (downstreamKeyValue) body.downstream_api_key = downstreamKeyValue;
-          await request(`/admin/channels/${encodeURIComponent(state.editingId)}`, { method: "PATCH", admin: true, body });
-        } else {
-          body.upstream_api_key = upstreamKeyValue || null;
-          body.downstream_api_key = downstreamKeyValue || null;
-          await request("/admin/channels", { method: "POST", admin: true, body });
+        setBusy(true);
+        try {
+          if (state.editingId) {
+            if (dom.clearChannelUpstreamKey.checked) body.upstream_api_key = null;
+            if (upstreamKeyValue) body.upstream_api_key = upstreamKeyValue;
+            if (dom.clearChannelKey.checked) body.downstream_api_key = null;
+            if (downstreamKeyValue) body.downstream_api_key = downstreamKeyValue;
+            await request(`/admin/channels/${encodeURIComponent(state.editingId)}`, { method: "PATCH", admin: true, body });
+          } else {
+            body.upstream_api_key = upstreamKeyValue || null;
+            body.downstream_api_key = downstreamKeyValue || null;
+            await request("/admin/channels", { method: "POST", admin: true, body });
+          }
+          dom.channelDialog.close();
+          await loadChannels();
+          render();
+          showNotice("渠道已保存", "success");
+        } catch (error) {
+          showNotice(error.message, "error");
+        } finally {
+          setBusy(false);
         }
-        dom.channelDialog.close();
-        await loadChannels();
-        render();
-        showNotice("渠道已保存", "success");
       }
 
       async function toggleChannel(id) {
@@ -1663,7 +1776,7 @@
       async function resetFingerprint() {
         if (!window.confirm("重置网关指纹？")) return;
         await request("/admin/fingerprint/reset", { method: "POST", admin: true });
-        state.config = await request("/v1/config");
+        state.config = await request("/admin/config", { admin: true });
         render();
         showNotice("指纹已重置", "success");
       }

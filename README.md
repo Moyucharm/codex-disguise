@@ -49,6 +49,9 @@ cp .env.example .env
 http://localhost:8002
 ```
 
+公网部署时不要直接暴露明文 HTTP 端口。建议放在 HTTPS 反向代理后面，
+并让应用端口只监听本机或内网地址。
+
 ## Docker 部署
 
 本仓库提供 `docker-compose.yml`，默认使用远程镜像：
@@ -72,8 +75,12 @@ docker compose up -d
 默认映射端口：
 
 ```text
-宿主机 8002 -> 容器 8002
+宿主机 127.0.0.1:8002 -> 容器 8002
 ```
+
+如果需要公网访问，请使用 Nginx、Caddy 等 HTTPS 反向代理转发到
+`127.0.0.1:8002`。不要直接将 `8002:8002` 暴露到公网，否则管理 token
+和客户端 API key 会在 HTTP 明文链路上传输。
 
 数据持久化使用 bind mount：
 
@@ -112,7 +119,7 @@ http://localhost:8002/management
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查 |
-| `GET` | `/v1/config` | 网关配置摘要 |
+| `GET` | `/v1/config` | 公开网关配置摘要，不包含密钥或本地路径 |
 | `GET` | `/v1/models` | 模型列表 |
 | `POST` | `/v1/responses` | OpenAI 兼容 Responses 入口 |
 
@@ -121,6 +128,7 @@ http://localhost:8002/management
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/admin/session` | 验证管理会话 |
+| `GET` | `/admin/config` | 获取完整管理配置摘要 |
 | `GET` | `/admin/channels` | 获取渠道列表 |
 | `POST` | `/admin/channels` | 创建渠道 |
 | `GET` | `/admin/channels/{channel_id}` | 获取渠道详情 |

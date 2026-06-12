@@ -374,7 +374,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await proxy_client.aclose()
 
 
-app = FastAPI(title="codex2api", lifespan=lifespan)
+app = FastAPI(
+    title="codex2api",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 @app.exception_handler(GatewayError)
@@ -441,6 +447,35 @@ def _error_response(
             }
         },
     )
+
+
+def _config_payload(request: Request, include_private: bool) -> dict[str, Any]:
+    with _connect_db() as conn:
+        state = _get_gateway_state(conn) if include_private else None
+        channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
+        enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
+
+    payload = {
+        "originator": ORIGINATOR,
+        "version": CODEX_VERSION,
+        "user_agent": _codex_user_agent(),
+        "authorization": "client_api_key_or_channel_downstream_api_key",
+        "failure_threshold": FAILURE_THRESHOLD,
+        "cooldown_seconds": COOLDOWN_SECONDS,
+        "channel_count": channel_count,
+        "enabled_channel_count": enabled_channel_count,
+    }
+    if include_private:
+        assert state is not None
+        payload.update(
+            {
+                "database_path": str(DB_PATH),
+                "admin_token_source": request.app.state.admin_token_source,
+                "client_api_key_source": request.app.state.client_api_key_source,
+                "state": _public_state(state),
+            }
+        )
+    return payload
 
 
 def _gateway_error_response(error: GatewayError) -> JSONResponse:
@@ -1242,45 +1277,27 @@ async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
 
 
 @app.get("/health")
-async def health(request: Request):
+async def health():
     with _connect_db() as conn:
-        channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
-        enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
-    return {
-        "status": "ok",
-        "database_path": str(DB_PATH),
-        "admin_token_source": request.app.state.admin_token_source,
-        "client_api_key_source": request.app.state.client_api_key_source,
-        "channel_count": channel_count,
-        "enabled_channel_count": enabled_channel_count,
-    }
+        conn.execute("SELECT 1").fetchone()
+    return {"status": "ok"}
 
 
 @app.get("/management", include_in_schema=False)
 async def management_page():
-    return FileResponse(MANAGEMENT_HTML_PATH)
+    return FileResponse(
+        MANAGEMENT_HTML_PATH,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/v1/config")
 async def config(request: Request):
-    with _connect_db() as conn:
-        state = _get_gateway_state(conn)
-        channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
-        enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
-    return {
-        "database_path": str(DB_PATH),
-        "admin_token_source": request.app.state.admin_token_source,
-        "client_api_key_source": request.app.state.client_api_key_source,
-        "originator": ORIGINATOR,
-        "version": CODEX_VERSION,
-        "user_agent": _codex_user_agent(),
-        "authorization": "client_api_key_or_channel_downstream_api_key",
-        "failure_threshold": FAILURE_THRESHOLD,
-        "cooldown_seconds": COOLDOWN_SECONDS,
-        "channel_count": channel_count,
-        "enabled_channel_count": enabled_channel_count,
-        "state": _public_state(state),
-    }
+    return _config_payload(request, include_private=False)
 
 
 @app.get("/v1/models")
@@ -1322,6 +1339,12 @@ async def admin_session(request: Request):
         "admin_token_source": request.app.state.admin_token_source,
         "client_api_key_source": request.app.state.client_api_key_source,
     }
+
+
+@app.get("/admin/config")
+async def admin_config(request: Request):
+    _require_admin(request)
+    return _config_payload(request, include_private=True)
 
 
 @app.get("/admin/channels")
