@@ -579,14 +579,28 @@ def _client_for_channel(request: Request, channel: dict[str, Any]) -> httpx.Asyn
 
 
 def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, Any]) -> dict[str, str]:
+    turn_metadata = json.dumps({
+        "session_id": state["session_id"],
+        "thread_id": state["thread_id"],
+        "thread_source": "user",
+        "turn_id": _new_prefixed_id("turn"),
+        "workspaces": {},
+        "sandbox": "seccomp",
+        "turn_started_at_unix_ms": int(_now_ts() * 1000),
+        "request_kind": "turn",
+        "window_id": _window_id(state),
+    })
+
     headers = {
         "Content-Type": "application/json",
         "Authorization": _upstream_authorization_header(channel),
         "User-Agent": _codex_user_agent(),
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
+        "x-codex-beta-features": "terminal_resize_reflow",
         "x-codex-installation-id": state["installation_id"],
         "x-codex-window-id": _window_id(state),
+        "x-codex-turn-metadata": turn_metadata,
         "session-id": state["session_id"],
         "session_id": state["session_id"],
         "thread-id": state["thread_id"],
@@ -630,6 +644,27 @@ def _ensure_client_metadata(
             metadata.setdefault(name, value)
 
     body["client_metadata"] = metadata
+    return body
+
+
+def _ensure_input_array(body: dict[str, Any]) -> dict[str, Any]:
+    """将字符串格式的 input 转换为数组格式。
+
+    anyrouter 等第三方代理要求 input 必须是数组格式，
+    而非简单的字符串。缺失数组格式会返回 invalid_codex_request。
+    """
+    body = dict(body)
+    input_value = body.get("input")
+
+    if isinstance(input_value, str):
+        body["input"] = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": input_value}],
+            }
+        ]
+
     return body
 
 
@@ -1263,6 +1298,7 @@ def _test_response_has_content(data: Any) -> bool:
 
 async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
     state = _get_gateway_state()
+    body = _ensure_input_array(body)
     body = _ensure_client_metadata(request, body, state)
     body = _ensure_responses_include(body)
 
