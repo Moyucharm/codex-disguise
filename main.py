@@ -28,8 +28,8 @@ TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 CHANNEL_TEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 ORIGINATOR = "codex_cli_rs"
-CODEX_VERSION = "0.148.0"
-TERMINAL_UA = "unknown"
+CODEX_VERSION = "0.139.0"
+TERMINAL_UA = ""
 FAILURE_THRESHOLD = 3
 COOLDOWN_SECONDS = 300
 STATS_WINDOW_SECONDS = 24 * 60 * 60
@@ -44,10 +44,6 @@ TRACE_RESPONSE_HEADERS = (
 )
 
 PASSTHROUGH_REQUEST_HEADERS = (
-    "OpenAI-Organization",
-    "OpenAI-Project",
-    "ChatGPT-Account-Id",
-    "X-OpenAI-Fedramp",
     "x-oai-attestation",
     "x-openai-subagent",
     "x-codex-parent-thread-id",
@@ -139,12 +135,7 @@ def _sanitize_user_agent(value: str) -> str:
 
 
 def _codex_user_agent() -> str:
-    os_type = platform.system() or "unknown"
-    os_version = platform.release() or "unknown"
-    arch = (platform.machine() or "unknown").lower()
-    return _sanitize_user_agent(
-        f"{ORIGINATOR}/{CODEX_VERSION} ({os_type} {os_version}; {arch}) {TERMINAL_UA}"
-    )
+    return f"{ORIGINATOR}/{CODEX_VERSION} (Windows 10; x86_64)"
 
 
 def _connect_db() -> sqlite3.Connection:
