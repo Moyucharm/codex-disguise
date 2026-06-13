@@ -1550,10 +1550,11 @@ async def test_channel(request: Request, channel_id: str):
 
     started_at = time.perf_counter()
     try:
-        headers = _codex_headers(request, _get_gateway_state(), channel)
+        state = _get_gateway_state()
+        headers = _codex_headers(request, state, channel)
         test_body = {"model": model, "input": "ping", "max_output_tokens": 16}
         test_body = _ensure_input_array(test_body)
-        test_body = _ensure_client_metadata(request, test_body, _get_gateway_state())
+        test_body = _ensure_client_metadata(request, test_body, state)
         test_body = _ensure_responses_include(test_body)
         response = await _client_for_channel(request, channel).post(
             _upstream_responses_url(channel),
