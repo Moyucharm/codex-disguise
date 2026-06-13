@@ -33,6 +33,7 @@ TERMINAL_UA = "unknown"
 FAILURE_THRESHOLD = 3
 COOLDOWN_SECONDS = 300
 STATS_WINDOW_SECONDS = 24 * 60 * 60
+DB_BUSY_TIMEOUT_MS = 5000
 
 TRACE_RESPONSE_HEADERS = (
     "x-request-id",
@@ -148,9 +149,10 @@ def _codex_user_agent() -> str:
 
 def _connect_db() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -276,6 +278,8 @@ def _ensure_client_api_key(dotenv: dict[str, str]) -> SecretValue:
 
 def _init_db() -> None:
     with _connect_db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS gateway_state (
@@ -697,10 +701,13 @@ def _record_channel_result(
             )
         elif affects_runtime:
             row = conn.execute(
-                "SELECT consecutive_failures FROM channel_runtime WHERE channel_id = ?",
+                "SELECT consecutive_failures, cooldown_until FROM channel_runtime WHERE channel_id = ?",
                 (channel_id,),
             ).fetchone()
-            failures = int(row["consecutive_failures"] if row else 0) + 1
+            previous_failures = int(row["consecutive_failures"] if row else 0)
+            if row and row["cooldown_until"] is not None and float(row["cooldown_until"]) <= now:
+                previous_failures = 0
+            failures = previous_failures + 1
             cooldown_until = now + COOLDOWN_SECONDS if failures >= FAILURE_THRESHOLD else None
             conn.execute(
                 """
@@ -717,29 +724,15 @@ def _record_channel_result(
         conn.commit()
 
 
-def _refresh_expired_cooldowns(conn: sqlite3.Connection) -> None:
-    now = _now_ts()
-    conn.execute(
-        """
-        UPDATE channel_runtime
-        SET consecutive_failures = 0, cooldown_until = NULL, updated_at = ?
-        WHERE cooldown_until IS NOT NULL AND cooldown_until <= ?
-        """,
-        (now, now),
-    )
-
-
 def _select_channels(request: Request, model: str | None = None) -> list[dict[str, Any]]:
     client_token = _request_bearer_token(request)
     with _connect_db() as conn:
-        _refresh_expired_cooldowns(conn)
-        conn.commit()
         now = _now_ts()
         rows = conn.execute(
             """
             SELECT
                 c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
-                c.created_at, c.updated_at,
+                c.proxy_url, c.created_at, c.updated_at,
                 COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
                 r.cooldown_until, r.last_success_at, r.last_failure_at
             FROM channels c
@@ -786,37 +779,66 @@ def _select_channels(request: Request, model: str | None = None) -> list[dict[st
 
 
 def _stats_for_channel(conn: sqlite3.Connection, channel_id: str) -> dict[str, Any]:
+    return _stats_for_channels(conn, [channel_id]).get(channel_id, _empty_channel_stats())
+
+
+def _empty_channel_stats() -> dict[str, Any]:
+    return {
+        "success_24h": 0,
+        "failure_24h": 0,
+        "total_24h": 0,
+        "success_rate_24h": 0.0,
+        "failure_rate_24h": 0.0,
+    }
+
+
+def _stats_for_channels(conn: sqlite3.Connection, channel_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not channel_ids:
+        return {}
     cutoff = _now_ts() - STATS_WINDOW_SECONDS
-    row = conn.execute(
-        """
+    placeholders = ", ".join("?" for _ in channel_ids)
+    rows = conn.execute(
+        f"""
         SELECT
+            channel_id,
             COUNT(*) AS total,
             COALESCE(SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), 0) AS success_count,
             COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS failure_count
         FROM channel_events
-        WHERE channel_id = ? AND created_at >= ?
+        WHERE channel_id IN ({placeholders}) AND created_at >= ?
+        GROUP BY channel_id
         """,
-        (channel_id, cutoff),
-    ).fetchone()
-    total = int(row["total"] or 0)
-    success_count = int(row["success_count"] or 0)
-    failure_count = int(row["failure_count"] or 0)
-    success_rate = round((success_count / total) * 100, 2) if total else 0.0
-    failure_rate = round((failure_count / total) * 100, 2) if total else 0.0
-    return {
-        "success_24h": success_count,
-        "failure_24h": failure_count,
-        "total_24h": total,
-        "success_rate_24h": success_rate,
-        "failure_rate_24h": failure_rate,
-    }
+        [*channel_ids, cutoff],
+    ).fetchall()
+    stats = {channel_id: _empty_channel_stats() for channel_id in channel_ids}
+    for row in rows:
+        total = int(row["total"] or 0)
+        success_count = int(row["success_count"] or 0)
+        failure_count = int(row["failure_count"] or 0)
+        success_rate = round((success_count / total) * 100, 2) if total else 0.0
+        failure_rate = round((failure_count / total) * 100, 2) if total else 0.0
+        stats[row["channel_id"]] = {
+            "success_24h": success_count,
+            "failure_24h": failure_count,
+            "total_24h": total,
+            "success_rate_24h": success_rate,
+            "failure_rate_24h": failure_rate,
+        }
+    return stats
 
 
-def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+def _public_channel(
+    row: sqlite3.Row | dict[str, Any],
+    conn: sqlite3.Connection | None = None,
+    stats: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     channel = dict(row)
     cooldown_until = channel.get("cooldown_until")
     last_success_at = channel.get("last_success_at")
     last_failure_at = channel.get("last_failure_at")
+    now = _now_ts()
+    active_cooldown = cooldown_until is not None and float(cooldown_until) > now
+    consecutive_failures = int(channel.get("consecutive_failures") or 0) if active_cooldown or cooldown_until is None else 0
     raw_models = channel.get("supported_models")
     try:
         parsed_models = json.loads(raw_models) if raw_models else None
@@ -832,14 +854,16 @@ def _public_channel(row: sqlite3.Row | dict[str, Any], conn: sqlite3.Connection 
         "has_downstream_api_key": bool(channel.get("downstream_api_key")),
         "supported_models": parsed_models,
         "proxy_url": channel.get("proxy_url"),
-        "consecutive_failures": int(channel.get("consecutive_failures") or 0),
-        "cooldown_until": _ts_to_iso(float(cooldown_until)) if cooldown_until is not None else None,
+        "consecutive_failures": consecutive_failures,
+        "cooldown_until": _ts_to_iso(float(cooldown_until)) if active_cooldown else None,
         "last_success_at": _ts_to_iso(float(last_success_at)) if last_success_at is not None else None,
         "last_failure_at": _ts_to_iso(float(last_failure_at)) if last_failure_at is not None else None,
         "created_at": channel.get("created_at"),
         "updated_at": channel.get("updated_at"),
     }
-    if conn is not None:
+    if stats is not None:
+        result.update(stats)
+    elif conn is not None:
         result.update(_stats_for_channel(conn, channel["id"]))
     return result
 
@@ -864,8 +888,6 @@ def _get_channel_row(conn: sqlite3.Connection, channel_id: str) -> sqlite3.Row:
 
 
 def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    _refresh_expired_cooldowns(conn)
-    conn.commit()
     return conn.execute(
         """
         SELECT
@@ -1277,14 +1299,14 @@ async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
 
 
 @app.get("/health")
-async def health():
+def health():
     with _connect_db() as conn:
         conn.execute("SELECT 1").fetchone()
     return {"status": "ok"}
 
 
 @app.get("/management", include_in_schema=False)
-async def management_page():
+def management_page():
     return FileResponse(
         MANAGEMENT_HTML_PATH,
         headers={
@@ -1296,12 +1318,12 @@ async def management_page():
 
 
 @app.get("/v1/config")
-async def config(request: Request):
+def config(request: Request):
     return _config_payload(request, include_private=False)
 
 
 @app.get("/v1/models")
-async def list_models():
+def list_models():
     return {"object": "list", "data": MODELS}
 
 
@@ -1315,7 +1337,7 @@ async def proxy_responses(request: Request):
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(_: Request):
+def chat_completions(_: Request):
     return _error_response(
         "The /v1/chat/completions endpoint is not supported. Use /v1/responses instead.",
         status_code=404,
@@ -1325,14 +1347,14 @@ async def chat_completions(_: Request):
 
 
 @app.post("/admin/fingerprint/reset")
-async def reset_fingerprint(request: Request):
+def reset_fingerprint(request: Request):
     _require_admin(request)
     state = _reset_gateway_state()
     return {"state": _public_state(state)}
 
 
 @app.get("/admin/session")
-async def admin_session(request: Request):
+def admin_session(request: Request):
     _require_admin(request)
     return {
         "authenticated": True,
@@ -1342,17 +1364,18 @@ async def admin_session(request: Request):
 
 
 @app.get("/admin/config")
-async def admin_config(request: Request):
+def admin_config(request: Request):
     _require_admin(request)
     return _config_payload(request, include_private=True)
 
 
 @app.get("/admin/channels")
-async def list_channels(request: Request):
+def list_channels(request: Request):
     _require_admin(request)
     with _connect_db() as conn:
         rows = _list_channel_rows(conn)
-        return {"object": "list", "data": [_public_channel(row, conn) for row in rows]}
+        stats = _stats_for_channels(conn, [row["id"] for row in rows])
+        return {"object": "list", "data": [_public_channel(row, stats=stats.get(row["id"])) for row in rows]}
 
 
 @app.post("/admin/channels")
@@ -1395,7 +1418,7 @@ async def create_channel(request: Request):
 
 
 @app.get("/admin/channels/{channel_id}")
-async def get_channel(request: Request, channel_id: str):
+def get_channel(request: Request, channel_id: str):
     _require_admin(request)
     with _connect_db() as conn:
         row = _get_channel_row(conn, channel_id)
@@ -1430,7 +1453,7 @@ async def update_channel(request: Request, channel_id: str):
 
 
 @app.delete("/admin/channels/{channel_id}")
-async def delete_channel(request: Request, channel_id: str):
+def delete_channel(request: Request, channel_id: str):
     _require_admin(request)
     with _connect_db() as conn:
         _get_channel_row(conn, channel_id)
@@ -1440,7 +1463,7 @@ async def delete_channel(request: Request, channel_id: str):
 
 
 @app.post("/admin/channels/{channel_id}/enable")
-async def enable_channel(request: Request, channel_id: str):
+def enable_channel(request: Request, channel_id: str):
     _require_admin(request)
     with _connect_db() as conn:
         _get_channel_row(conn, channel_id)
@@ -1450,7 +1473,7 @@ async def enable_channel(request: Request, channel_id: str):
 
 
 @app.post("/admin/channels/{channel_id}/disable")
-async def disable_channel(request: Request, channel_id: str):
+def disable_channel(request: Request, channel_id: str):
     _require_admin(request)
     with _connect_db() as conn:
         _get_channel_row(conn, channel_id)
@@ -1460,7 +1483,7 @@ async def disable_channel(request: Request, channel_id: str):
 
 
 @app.post("/admin/channels/{channel_id}/reset-runtime")
-async def reset_channel_runtime(request: Request, channel_id: str):
+def reset_channel_runtime(request: Request, channel_id: str):
     _require_admin(request)
     now = _now_ts()
     with _connect_db() as conn:
@@ -1541,7 +1564,7 @@ async def test_channel(request: Request, channel_id: str):
 
 
 @app.get("/admin/channels/{channel_id}/stats")
-async def channel_stats(request: Request, channel_id: str):
+def channel_stats(request: Request, channel_id: str):
     _require_admin(request)
     with _connect_db() as conn:
         row = _get_channel_row(conn, channel_id)
@@ -1549,8 +1572,9 @@ async def channel_stats(request: Request, channel_id: str):
 
 
 @app.get("/admin/channel-stats")
-async def all_channel_stats(request: Request):
+def all_channel_stats(request: Request):
     _require_admin(request)
     with _connect_db() as conn:
         rows = _list_channel_rows(conn)
-        return {"object": "list", "data": [_public_channel(row, conn) for row in rows]}
+        stats = _stats_for_channels(conn, [row["id"] for row in rows])
+        return {"object": "list", "data": [_public_channel(row, stats=stats.get(row["id"])) for row in rows]}

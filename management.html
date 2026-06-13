@@ -1061,10 +1061,14 @@
       document.addEventListener("DOMContentLoaded", init);
 
       function initialBaseUrl() {
-        const saved = localStorage.getItem(storageKeys.apiBase);
-        if (saved) return saved;
+        const saved = normalizeApiBase(localStorage.getItem(storageKeys.apiBase));
+        if (saved && isSameOriginApiBase(saved)) return saved;
         if (location.protocol === "http:" || location.protocol === "https:") return location.origin;
-        return "http://localhost:8000";
+        return "http://localhost:8002";
+      }
+
+      function normalizeApiBase(value) {
+        return String(value || "").trim().replace(/\/+$/, "");
       }
 
       function isSameOriginApiBase(apiBase = state.apiBase) {
@@ -1076,6 +1080,29 @@
         }
       }
 
+      function sameOriginError(apiBase = state.apiBase) {
+        if (location.protocol !== "http:" && location.protocol !== "https:") {
+          return "管理台不支持 file:// 打开，请通过 http://localhost:8002/management 访问";
+        }
+        if (!isSameOriginApiBase(apiBase)) {
+          return `管理台仅支持同源后端，请使用 ${location.origin}`;
+        }
+        return "";
+      }
+
+      function ensureSameOriginApiBase(apiBase = state.apiBase) {
+        const message = sameOriginError(apiBase);
+        if (message) throw new Error(message);
+      }
+
+      function debounce(callback, delayMs) {
+        let timerId = 0;
+        return (...args) => {
+          window.clearTimeout(timerId);
+          timerId = window.setTimeout(() => callback(...args), delayMs);
+        };
+      }
+
       function init() {
         cacheDom();
         dom.loginApiBase.value = state.apiBase;
@@ -1084,6 +1111,8 @@
         dom.apiBase.value = state.apiBase;
         bindEvents();
         render();
+        const connectionError = sameOriginError();
+        if (connectionError) showLoginNotice(connectionError, "error");
         restoreSavedSession();
       }
 
@@ -1125,10 +1154,10 @@
         dom.applyConnection.addEventListener("click", applyConnection);
         dom.refreshAll.addEventListener("click", refreshAll);
         dom.logoutButton.addEventListener("click", logout);
-        dom.channelSearch.addEventListener("input", () => {
+        dom.channelSearch.addEventListener("input", debounce(() => {
           state.query = dom.channelSearch.value.trim().toLowerCase();
           renderChannels();
-        });
+        }, 150));
         dom.channelForm.addEventListener("submit", saveChannel);
         dom.testForm.addEventListener("submit", runChannelTest);
       }
@@ -1146,16 +1175,27 @@
       }
 
       function applyConnection() {
-        if (state.busy) return;
-        state.apiBase = dom.apiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
+        if (state.busy) {
+          showNotice("请求处理中，请稍后再试", "");
+          return;
+        }
+        const apiBase = normalizeApiBase(dom.apiBase.value) || initialBaseUrl();
+        const connectionError = sameOriginError(apiBase);
+        if (connectionError) {
+          dom.apiBase.value = state.apiBase;
+          showNotice(connectionError, "error");
+          return;
+        }
+        state.apiBase = apiBase;
         localStorage.setItem(storageKeys.apiBase, state.apiBase);
         refreshAll();
       }
 
       async function restoreSavedSession() {
         if (!state.adminToken) return;
-        if (!isSameOriginApiBase()) {
-          showLoginNotice("已保存跨域 API Base。为避免泄露 Admin Token，请手动登录", "");
+        const connectionError = sameOriginError();
+        if (connectionError) {
+          showLoginNotice(connectionError, "error");
           return;
         }
         setLoginBusy(true);
@@ -1187,9 +1227,14 @@
       async function login(event) {
         event.preventDefault();
         if (dom.loginButton.disabled) return;
-        state.apiBase = dom.loginApiBase.value.trim().replace(/\/+$/, "") || initialBaseUrl();
+        state.apiBase = normalizeApiBase(dom.loginApiBase.value) || initialBaseUrl();
         state.adminToken = dom.loginAdminToken.value.trim();
         state.rememberToken = dom.loginRememberToken.checked;
+        const connectionError = sameOriginError();
+        if (connectionError) {
+          showLoginNotice(connectionError, "error");
+          return;
+        }
         if (!state.adminToken) {
           showLoginNotice("请输入 Admin Token", "error");
           return;
@@ -1296,6 +1341,7 @@
       }
 
       async function request(path, options = {}) {
+        ensureSameOriginApiBase();
         const headers = {};
         if (options.body !== undefined) {
           headers["Content-Type"] = "application/json";
@@ -1390,8 +1436,7 @@
         dom.navStateCount.textContent = state.config?.version || "-";
         renderSummary(metrics);
         renderOverviewRows();
-        renderFilters(metrics);
-        renderChannels();
+        renderChannels(metrics);
         renderModels();
         renderState();
       }
@@ -1466,8 +1511,7 @@
         `).join("");
       }
 
-      function renderChannels() {
-        const metrics = buildMetrics();
+      function renderChannels(metrics = buildMetrics()) {
         renderFilters(metrics);
         renderChannelKeyAlert(metrics);
 
@@ -1582,7 +1626,10 @@
           dom.testDialog.close();
           return;
         }
-        if (state.busy) return;
+        if (state.busy) {
+          showNotice("请求处理中，请稍后再试", "");
+          return;
+        }
         const useBusyLock = busyActions.has(action);
         try {
           if (useBusyLock) setBusy(true);
@@ -1647,7 +1694,11 @@
 
       async function runChannelTest(event) {
         event.preventDefault();
-        if (!state.testingId || state.busy) return;
+        if (!state.testingId) return;
+        if (state.busy) {
+          showNotice("请求处理中，请稍后再试", "");
+          return;
+        }
         setBusy(true);
         state.testResult = { pending: true, message: "正在测试，最多等待 60 秒" };
         renderTestResult();
@@ -1695,7 +1746,10 @@
 
       async function saveChannel(event) {
         event.preventDefault();
-        if (state.busy) return;
+        if (state.busy) {
+          showNotice("请求处理中，请稍后再试", "");
+          return;
+        }
         const body = {
           name: dom.channelName.value.trim(),
           upstream_url: dom.channelUrl.value.trim(),
