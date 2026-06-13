@@ -595,6 +595,7 @@ def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, A
         "Content-Type": "application/json",
         "Authorization": _upstream_authorization_header(channel),
         "User-Agent": _codex_user_agent(),
+        "accept": "text/event-stream",
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
         "x-codex-beta-features": "terminal_resize_reflow",
