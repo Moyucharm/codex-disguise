@@ -1550,10 +1550,12 @@ async def test_channel(request: Request, channel_id: str):
     started_at = time.perf_counter()
     try:
         headers = _codex_headers(request, _get_gateway_state(), channel)
+        test_body = {"model": model, "input": "ping", "max_output_tokens": 16}
+        test_body = _ensure_input_array(test_body)
         response = await _client_for_channel(request, channel).post(
             _upstream_responses_url(channel),
             headers=headers,
-            json={"model": model, "input": "ping", "max_output_tokens": 16},
+            json=test_body,
             timeout=CHANNEL_TEST_TIMEOUT,
         )
         result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
