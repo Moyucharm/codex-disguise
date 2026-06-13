@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>codex2api 管理台</title>
+  <title>codex-disguise 管理台</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%23b86532'/%3E%3Cstop offset='100%25' stop-color='%239c4f25'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M8 18L18 4h6l4 12 4-12h6l10 14-8 28H16L8 18z' fill='url(%23g)'/%3E%3Cellipse cx='26' cy='32' rx='4' ry='5' fill='%23fff'/%3E%3Cellipse cx='38' cy='32' rx='4' ry='5' fill='%23fff'/%3E%3Cellipse cx='26' cy='33' rx='2' ry='3' fill='%2324211f'/%3E%3Cellipse cx='38' cy='33' rx='2' ry='3' fill='%2324211f'/%3E%3Cellipse cx='32' cy='39' rx='2.5' ry='1.5' fill='%23e8a87c'/%3E%3C/svg%3E">
   <style>
     :root {
       color-scheme: light;
@@ -26,10 +27,29 @@
       --amber: #8a6218;
       --amber-soft: #f5ecd7;
       --shadow: 0 10px 28px rgba(65, 55, 46, 0.07);
+      --shadow-sm: 0 2px 8px rgba(65, 55, 46, 0.05);
+      --shadow-lg: 0 20px 44px rgba(65, 55, 46, 0.12);
       --radius: 8px;
+      --radius-sm: 6px;
+      --radius-lg: 12px;
+      --duration-fast: 0.18s;
+      --duration-normal: 0.28s;
+      --duration-slow: 0.4s;
+      --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+      --ease-in-out: cubic-bezier(0.65, 0.05, 0.36, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
     }
 
     * { box-sizing: border-box; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
 
     html { min-width: 320px; }
 
@@ -64,10 +84,15 @@
       line-height: 1;
       font-weight: 500;
       cursor: pointer;
-      transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+      transition: border-color var(--duration-fast) var(--ease-out),
+                  background-color var(--duration-fast) var(--ease-out),
+                  color var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out),
+                  transform var(--duration-fast) var(--ease-out);
     }
 
-    button:hover { border-color: var(--line-strong); background: var(--surface-soft); }
+    button:hover { border-color: var(--line-strong); background: var(--surface-soft); transform: translateY(-1px); }
+    button:active:not(:disabled) { transform: translateY(0) scale(0.98); }
     button:disabled { cursor: not-allowed; opacity: 0.55; }
 
     input, select, textarea {
@@ -79,6 +104,13 @@
       min-height: 36px;
       padding: 7px 10px;
       outline: none;
+      transition: border-color var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out),
+                  background-color var(--duration-fast) var(--ease-out);
+    }
+
+    input:hover:not(:focus), select:hover:not(:focus), textarea:hover:not(:focus) {
+      border-color: var(--line-strong);
     }
 
     input:focus, select:focus, textarea:focus {
@@ -110,6 +142,12 @@
       box-shadow: 0 24px 70px rgba(65, 55, 46, 0.16);
       padding: 24px;
       backdrop-filter: blur(16px);
+      animation: cardEnter var(--duration-slow) var(--ease-out) both;
+    }
+
+    @keyframes cardEnter {
+      from { opacity: 0; transform: translateY(18px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
     }
 
     .login-card .brand { margin-bottom: 20px; }
@@ -150,7 +188,7 @@
       color: var(--muted);
     }
 
-    .login-notice.show { display: block; }
+    .login-notice.show { display: block; animation: noticeIn var(--duration-normal) var(--ease-out) both; }
     .login-notice.error { color: var(--red); border-color: #e5c4bd; background: var(--red-soft); }
     .login-notice.success { color: var(--green); border-color: #b9decf; background: var(--green-soft); }
 
@@ -181,6 +219,13 @@
       background: var(--surface-warm);
       color: var(--accent-strong);
       font-weight: 800;
+      transition: transform var(--duration-normal) var(--ease-spring),
+                  box-shadow var(--duration-fast) var(--ease-out);
+    }
+
+    .brand-mark:hover {
+      transform: rotate(-6deg) scale(1.06);
+      box-shadow: var(--shadow-sm);
     }
 
     .brand-title {
@@ -211,10 +256,27 @@
       border-color: transparent;
       background: transparent;
       color: var(--muted);
+      position: relative;
+      overflow: hidden;
     }
 
-    .nav-button:hover { background: var(--surface-soft); color: var(--text); }
-    .nav-button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .nav-button::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 3px;
+      height: 0;
+      border-radius: 0 3px 3px 0;
+      background: var(--accent);
+      transform: translateY(-50%);
+      transition: height var(--duration-normal) var(--ease-out);
+    }
+
+    .nav-button:hover { background: var(--surface-soft); color: var(--text); transform: translateX(2px); }
+    .nav-button:hover::before { height: 18px; }
+    .nav-button.active { background: var(--accent); color: #fff; border-color: var(--accent); transform: translateX(0); }
+    .nav-button.active::before { height: 0; }
 
     .nav-icon {
       display: grid;
@@ -222,7 +284,10 @@
       width: 24px;
       height: 24px;
       font-weight: 800;
+      transition: transform var(--duration-fast) var(--ease-spring);
     }
+
+    .nav-button:hover .nav-icon { transform: scale(1.12); }
 
     .main {
       min-width: 0;
@@ -304,7 +369,7 @@
       color: var(--muted);
     }
 
-    .notice.show { display: flex; }
+    .notice.show { display: flex; animation: noticeIn var(--duration-normal) var(--ease-out) both; }
     .notice.error { color: var(--red); border-color: #e5c4bd; background: var(--red-soft); }
     .notice.success { color: var(--green); border-color: #b9decf; background: var(--green-soft); }
 
@@ -318,10 +383,20 @@
       color: var(--amber);
     }
 
-    .inline-alert.show { display: block; }
+    .inline-alert.show { display: block; animation: noticeIn var(--duration-normal) var(--ease-out) both; }
 
     .view { display: none; }
-    .view.active { display: block; }
+    .view.active { display: block; animation: viewEnter var(--duration-normal) var(--ease-out) both; }
+
+    @keyframes viewEnter {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes noticeIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
     .summary-grid {
       display: grid;
@@ -337,6 +412,21 @@
       background: var(--surface);
       padding: 14px;
       box-shadow: var(--shadow);
+      animation: cardEnter var(--duration-normal) var(--ease-out) both;
+      transition: transform var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out),
+                  border-color var(--duration-fast) var(--ease-out);
+    }
+
+    .summary-grid .metric:nth-child(1) { animation-delay: 0.04s; }
+    .summary-grid .metric:nth-child(2) { animation-delay: 0.08s; }
+    .summary-grid .metric:nth-child(3) { animation-delay: 0.12s; }
+    .summary-grid .metric:nth-child(4) { animation-delay: 0.16s; }
+
+    .metric:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-lg);
+      border-color: var(--line-strong);
     }
 
     .metric-label {
@@ -361,11 +451,17 @@
 
     .panel {
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: var(--radius-lg);
       background: var(--surface);
       box-shadow: var(--shadow);
       margin-bottom: 16px;
       overflow: hidden;
+      animation: viewEnter var(--duration-normal) var(--ease-out) both;
+      transition: box-shadow var(--duration-normal) var(--ease-out);
+    }
+
+    .panel:hover {
+      box-shadow: var(--shadow-lg);
     }
 
     .panel-header {
@@ -418,13 +514,22 @@
       color: var(--muted);
       line-height: 1;
       white-space: nowrap;
+      transition: background-color var(--duration-fast) var(--ease-out),
+                  border-color var(--duration-fast) var(--ease-out),
+                  color var(--duration-fast) var(--ease-out),
+                  transform var(--duration-fast) var(--ease-out);
     }
+
+    .chip:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+    .chip:active { transform: translateY(0) scale(0.97); }
 
     .chip.active {
       background: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
+
+    .chip.active:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 
     .chip-count {
       display: inline-grid;
@@ -435,6 +540,7 @@
       background: rgba(0, 0, 0, 0.08);
       padding: 0 6px;
       font-size: 11px;
+      transition: background-color var(--duration-fast) var(--ease-out);
     }
 
     .table-wrap { overflow: auto; }
@@ -477,8 +583,27 @@
       font-size: 13px;
     }
 
-    tbody tr:hover { background: var(--surface-soft); }
+    tbody tr {
+      transition: background-color var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out);
+      animation: rowEnter var(--duration-normal) var(--ease-out) both;
+    }
+
+    tbody tr:hover {
+      background: var(--surface-soft);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
     tbody tr:last-child td { border-bottom: 0; }
+
+    @keyframes rowEnter {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .animate-once {
+      animation: rowEnter var(--duration-normal) var(--ease-out) both;
+    }
 
     .truncate {
       max-width: 300px;
@@ -509,7 +634,10 @@
       font-weight: 600;
       line-height: 1;
       white-space: nowrap;
+      transition: transform var(--duration-fast) var(--ease-out);
     }
+
+    .status-pill:hover { transform: scale(1.04); }
 
     .ok { color: var(--green); background: var(--green-soft); }
     .warn { color: var(--amber); background: var(--amber-soft); }
@@ -531,6 +659,7 @@
       background: #d6d0c8;
       border: 0;
       vertical-align: middle;
+      transition: background-color var(--duration-normal) var(--ease-out);
     }
 
     .toggle::after {
@@ -540,10 +669,11 @@
       border-radius: 50%;
       background: #fff;
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
-      transition: transform 0.16s ease;
+      transition: transform var(--duration-normal) var(--ease-spring);
     }
 
-    .toggle:hover { background: #cbc4ba; }
+    .toggle:hover { background: #cbc4ba; transform: none; }
+    .toggle:active:not(:disabled) { transform: none; }
     .toggle.on { background: var(--accent); }
     .toggle.on:hover { background: var(--accent-strong); }
     .toggle.on::after { transform: translateX(18px); }
@@ -612,6 +742,9 @@
     .detail-label { color: var(--muted); }
     .detail-value { overflow-wrap: anywhere; }
 
+    .detail-item { transition: background-color var(--duration-fast) var(--ease-out); }
+    .detail-item:hover { background: var(--surface-soft); }
+
     .model-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -624,6 +757,16 @@
       border-radius: var(--radius);
       padding: 13px;
       background: var(--surface-soft);
+      animation: cardEnter var(--duration-normal) var(--ease-out) both;
+      transition: transform var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out),
+                  border-color var(--duration-fast) var(--ease-out);
+    }
+
+    .model-card:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow);
+      border-color: var(--accent);
     }
 
     .model-id {
@@ -646,12 +789,29 @@
     dialog {
       width: min(640px, calc(100vw - 28px));
       border: 1px solid var(--line);
-      border-radius: var(--radius);
+      border-radius: var(--radius-lg);
       padding: 0;
       box-shadow: 0 24px 80px rgba(43, 34, 27, 0.24);
     }
 
-    dialog::backdrop { background: rgba(38, 32, 27, 0.32); }
+    dialog[open] {
+      animation: dialogIn var(--duration-normal) var(--ease-out) both;
+    }
+
+    @keyframes dialogIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    dialog::backdrop {
+      background: rgba(38, 32, 27, 0.32);
+      animation: backdropIn var(--duration-normal) var(--ease-out) both;
+    }
+
+    @keyframes backdropIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
 
     .dialog-header {
       display: flex;
@@ -710,6 +870,45 @@
       background: var(--surface-soft);
     }
 
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .btn-spinning {
+      position: relative;
+      pointer-events: none;
+    }
+
+    .btn-spinning::after {
+      content: "";
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    .spinning {
+      position: relative;
+    }
+
+    .spinning::after {
+      content: "";
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
     .sr-only {
       position: absolute;
       width: 1px;
@@ -759,10 +958,19 @@
 <body>
   <section class="login-view" id="loginView">
     <form class="login-card" id="loginForm">
-      <div class="brand" aria-label="codex2api">
-        <div class="brand-mark">C2</div>
+      <div class="brand" aria-label="codex-disguise">
+        <div class="brand-mark">
+          <svg viewBox="0 0 64 64" width="24" height="24" fill="none">
+            <path d="M8 18L18 4h6l4 12 4-12h6l10 14-8 28H16L8 18z" fill="currentColor"/>
+            <ellipse cx="26" cy="32" rx="4" ry="5" fill="var(--surface-warm)"/>
+            <ellipse cx="38" cy="32" rx="4" ry="5" fill="var(--surface-warm)"/>
+            <ellipse cx="26" cy="33" rx="2" ry="3" fill="var(--text)"/>
+            <ellipse cx="38" cy="33" rx="2" ry="3" fill="var(--text)"/>
+            <ellipse cx="32" cy="39" rx="2.5" ry="1.5" fill="var(--accent)"/>
+          </svg>
+        </div>
         <div>
-          <div class="brand-title">codex2api</div>
+          <div class="brand-title">codex-disguise</div>
           <div class="brand-subtitle">Gateway Management</div>
         </div>
       </div>
@@ -791,10 +999,19 @@
 
   <div class="app" id="appShell" hidden>
     <aside class="sidebar">
-      <div class="brand" aria-label="codex2api">
-        <div class="brand-mark">C2</div>
+      <div class="brand" aria-label="codex-disguise">
+        <div class="brand-mark">
+          <svg viewBox="0 0 64 64" width="24" height="24" fill="none">
+            <path d="M8 18L18 4h6l4 12 4-12h6l10 14-8 28H16L8 18z" fill="currentColor"/>
+            <ellipse cx="26" cy="32" rx="4" ry="5" fill="var(--surface-warm)"/>
+            <ellipse cx="38" cy="32" rx="4" ry="5" fill="var(--surface-warm)"/>
+            <ellipse cx="26" cy="33" rx="2" ry="3" fill="var(--text)"/>
+            <ellipse cx="38" cy="33" rx="2" ry="3" fill="var(--text)"/>
+            <ellipse cx="32" cy="39" rx="2.5" ry="1.5" fill="var(--accent)"/>
+          </svg>
+        </div>
         <div>
-          <div class="brand-title">codex2api</div>
+          <div class="brand-title">codex-disguise</div>
           <div class="brand-subtitle">Gateway Management</div>
         </div>
       </div>
@@ -1019,8 +1236,8 @@
   <script>
     (() => {
       const storageKeys = {
-        apiBase: "codex2api.management.apiBase",
-        adminToken: "codex2api.management.adminToken"
+        apiBase: "codex-disguise.management.apiBase",
+        adminToken: "codex-disguise.management.adminToken"
       };
 
       const titles = {
@@ -1045,7 +1262,8 @@
         editingId: null,
         testingId: null,
         testResult: null,
-        busy: false
+        busy: false,
+        hasAnimated: false
       };
 
       const busyActions = new Set([
@@ -1407,10 +1625,12 @@
         dom.applyConnection.disabled = value;
         dom.saveChannel.disabled = value;
         dom.runChannelTest.disabled = value;
+        dom.refreshAll.classList.toggle("btn-spinning", value);
       }
 
       function setLoginBusy(value) {
         dom.loginButton.disabled = value;
+        dom.loginButton.classList.toggle("btn-spinning", value);
       }
 
       function showNotice(message, type) {
@@ -1483,8 +1703,9 @@
           dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">暂无渠道</td></tr>`;
           return;
         }
-        dom.overviewRows.innerHTML = state.channels.slice(0, 8).map((channel) => `
-          <tr>
+        const animateClass = state.hasAnimated ? "" : " animate-once";
+        dom.overviewRows.innerHTML = state.channels.slice(0, 8).map((channel, index) => `
+          <tr class="${animateClass}" style="animation-delay: ${Math.min(index * 50, 400)}ms">
             <td><strong>${escapeHtml(channel.name)}</strong></td>
             <td>${statusHtml(channel)}</td>
             <td>${escapeHtml(channel.priority)}</td>
@@ -1494,6 +1715,7 @@
             <td>${escapeHtml(formatDate(channel.cooldown_until))}</td>
           </tr>
         `).join("");
+        state.hasAnimated = true;
       }
 
       function renderFilters(metrics) {
@@ -1535,14 +1757,15 @@
           return;
         }
 
-        dom.channelRows.innerHTML = rows.map((channel) => {
+        const animateClass = state.hasAnimated ? "" : " animate-once";
+        dom.channelRows.innerHTML = rows.map((channel, index) => {
           const id = escapeHtml(channel.id);
           const rate = Number(channel.success_rate_24h || 0);
           const modelsHtml = channel.supported_models
             ? channel.supported_models.map((m) => `<span class="badge idle">${escapeHtml(m)}</span>`).join(" ")
             : badge("全部", "ok");
           return `
-            <tr>
+            <tr class="${animateClass}" style="animation-delay: ${Math.min(index * 40, 400)}ms">
               <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono compact-id" title="${id}">${id}</div></td>
               <td><div class="truncate" title="${escapeHtml(channel.upstream_url)}">${escapeHtml(channel.upstream_url)}</div></td>
               <td><button type="button" class="toggle ${channel.enabled ? "on" : ""}" data-action="toggle-channel" data-id="${id}" aria-label="${channel.enabled ? "禁用" : "启用"}"></button></td>
@@ -1581,8 +1804,9 @@
           dom.modelGrid.innerHTML = `<div class="empty">暂无模型</div>`;
           return;
         }
-        dom.modelGrid.innerHTML = state.models.map((model) => `
-          <article class="model-card">
+        const animateClass = state.hasAnimated ? "" : " animate-once";
+        dom.modelGrid.innerHTML = state.models.map((model, index) => `
+          <article class="model-card${animateClass}" style="animation-delay: ${Math.min(index * 40, 400)}ms">
             <div class="model-id mono">${escapeHtml(model.id)}</div>
             <div class="model-meta">${escapeHtml(model.owned_by || "-")} · ${escapeHtml(model.object || "model")}</div>
           </article>
@@ -1728,7 +1952,7 @@
         }
         if (result.pending) {
           dom.testResult.className = "test-result show";
-          dom.testResult.innerHTML = `<div class="test-result-title">${escapeHtml(result.message)}</div>`;
+          dom.testResult.innerHTML = `<div class="test-result-title spinning">${escapeHtml(result.message)}</div>`;
           return;
         }
         const success = Boolean(result.success);

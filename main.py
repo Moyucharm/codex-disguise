@@ -379,7 +379,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="codex2api",
+    title="codex-disguise",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -417,9 +417,9 @@ def _trace_headers(response: httpx.Response) -> dict[str, str]:
 
 def _channel_response_headers(channel: dict[str, Any], failover_count: int) -> dict[str, str]:
     return {
-        "x-codex2api-channel-id": _sanitize_header_value(channel["id"]),
-        "x-codex2api-channel-name": _sanitize_header_value(channel["name"]),
-        "x-codex2api-failover-count": str(failover_count),
+        "x-codex-disguise-channel-id": _sanitize_header_value(channel["id"]),
+        "x-codex-disguise-channel-name": _sanitize_header_value(channel["name"]),
+        "x-codex-disguise-failover-count": str(failover_count),
     }
 
 
