@@ -8,7 +8,9 @@
 - 多渠道管理：支持新增、编辑、启用、禁用、删除渠道。
 - 渠道路由：按优先级路由，同优先级随机打散，支持失败自动切换。
 - 熔断冷却：连续失败达到阈值后自动进入冷却，冷却结束后恢复可用。
+- 熔断阈值：支持在管理台手动设置连续错误上限，未设置时默认使用 `3`。
 - 按模型路由：每个渠道可配置支持的模型列表。
+- 渠道级手动模型：支持在渠道配置中添加自定义模型名，并通过 `/v1/models` 暴露。
 - 渠道专属 Key：支持全局下游 Key，也支持渠道级下游 Key。
 - 上游 Key 管理：每个渠道单独配置上游 API Key。
 - 渠道 HTTP 代理：每个渠道可配置 `http://` 或 `https://` 代理地址。
@@ -109,6 +111,8 @@ http://localhost:8002/management
 - 查看服务概览与 24 小时渠道统计。
 - 新增、编辑、启用、禁用、删除渠道。
 - 配置渠道上游地址、上游 API Key、下游 API Key、支持模型和 HTTP 代理。
+- 在渠道配置中添加自定义模型名，自定义模型只会路由到显式选择它的渠道。
+- 设置连续错误上限；留空或恢复默认时使用 `3`，达到上限后渠道进入冷却。
 - 测试单个渠道可用性。
 - 重置渠道运行状态或网关指纹。
 
@@ -129,6 +133,7 @@ http://localhost:8002/management
 | --- | --- | --- |
 | `GET` | `/admin/session` | 验证管理会话 |
 | `GET` | `/admin/config` | 获取完整管理配置摘要 |
+| `PATCH` | `/admin/config` | 更新管理配置，当前支持 `failure_threshold` |
 | `GET` | `/admin/channels` | 获取渠道列表 |
 | `POST` | `/admin/channels` | 创建渠道 |
 | `GET` | `/admin/channels/{channel_id}` | 获取渠道详情 |
@@ -142,6 +147,14 @@ http://localhost:8002/management
 | `POST` | `/admin/fingerprint/reset` | 重置网关指纹 |
 
 注意：`/v1/chat/completions` 不支持，请使用 `/v1/responses`。
+
+## 模型与熔断设置
+
+- `/v1/models` 返回内置模型与所有渠道 `supported_models` 中声明的自定义模型，重复模型名会自动去重。
+- 渠道必须显式选择至少一个支持模型，`supported_models` 不再使用 `null` 表示“支持全部模型”。
+- 自定义模型只会路由到显式声明该模型的渠道；从所有渠道移除某个自定义模型后，该模型会从 `/v1/models` 消失。
+- `failure_threshold` 表示渠道进入冷却前允许的连续错误次数，必须是不小于 `1` 的整数。
+- `PATCH /admin/config` 传入 `{"failure_threshold": null}` 可恢复默认值 `3`。
 
 ## 渠道代理
 

@@ -30,10 +30,11 @@ CHANNEL_TEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 ORIGINATOR = "codex_cli_rs"
 CODEX_VERSION = "0.139.0"
 TERMINAL_UA = ""
-FAILURE_THRESHOLD = 3
+DEFAULT_FAILURE_THRESHOLD = 3
 COOLDOWN_SECONDS = 300
 STATS_WINDOW_SECONDS = 24 * 60 * 60
 DB_BUSY_TIMEOUT_MS = 5000
+FAILURE_THRESHOLD_KEY = "failure_threshold"
 
 TRACE_RESPONSE_HEADERS = (
     "x-request-id",
@@ -61,7 +62,7 @@ REQUIRED_RESPONSES_INCLUDE = "reasoning.encrypted_content"
 
 RETRYABLE_STATUS_CODES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 
-MODELS = [
+DEFAULT_MODELS = [
     {"id": "gpt-5.5", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.4", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.3-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
@@ -228,6 +229,129 @@ def _reset_gateway_state() -> dict[str, Any]:
         return _get_gateway_state(conn)
 
 
+def _gateway_setting_value(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM gateway_state WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row is not None else None
+
+
+def _upsert_gateway_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO gateway_state(key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (key, value, _utc_now()),
+    )
+
+
+def _parse_model_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        model_id = item.strip()
+        if model_id and model_id not in seen:
+            models.append(model_id)
+            seen.add(model_id)
+    return models
+
+
+def _default_model_list() -> list[str]:
+    return [str(model["id"]) for model in DEFAULT_MODELS]
+
+
+def _default_supported_models_json() -> str:
+    return json.dumps(_default_model_list(), ensure_ascii=False)
+
+
+def _models_payload(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    owns_conn = conn is None
+    if conn is None:
+        conn = _connect_db()
+    try:
+        models = [dict(model) for model in DEFAULT_MODELS]
+        seen = {str(model["id"]) for model in models}
+        rows = conn.execute("SELECT supported_models FROM channels WHERE supported_models IS NOT NULL").fetchall()
+        for row in rows:
+            for model_id in _parse_model_list(row["supported_models"]):
+                if model_id in seen:
+                    continue
+                models.append({"id": model_id, "object": "model", "created": 1700000000, "owned_by": "custom"})
+                seen.add(model_id)
+        return models
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def _parse_failure_threshold(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        threshold = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return threshold if threshold >= 1 else None
+
+
+def _get_failure_threshold(conn: sqlite3.Connection | None = None) -> int:
+    owns_conn = conn is None
+    if conn is None:
+        conn = _connect_db()
+    try:
+        configured = _parse_failure_threshold(_gateway_setting_value(conn, FAILURE_THRESHOLD_KEY))
+        return configured if configured is not None else DEFAULT_FAILURE_THRESHOLD
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+def _failure_threshold_configured(conn: sqlite3.Connection) -> bool:
+    return _parse_failure_threshold(_gateway_setting_value(conn, FAILURE_THRESHOLD_KEY)) is not None
+
+
+def _validate_failure_threshold(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise GatewayError(
+            "failure_threshold must be an integer greater than or equal to 1",
+            400,
+            "invalid_failure_threshold",
+            param="failure_threshold",
+        )
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError) as exc:
+        raise GatewayError(
+            "failure_threshold must be an integer greater than or equal to 1",
+            400,
+            "invalid_failure_threshold",
+            param="failure_threshold",
+        ) from exc
+    if threshold < 1:
+        raise GatewayError(
+            "failure_threshold must be greater than or equal to 1",
+            400,
+            "invalid_failure_threshold",
+            param="failure_threshold",
+        )
+    return threshold
+
+
 def _load_dotenv(path: Path = ENV_PATH) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -327,6 +451,10 @@ def _init_db() -> None:
             conn.execute("ALTER TABLE channels ADD COLUMN supported_models TEXT")
         if "proxy_url" not in channel_columns:
             conn.execute("ALTER TABLE channels ADD COLUMN proxy_url TEXT")
+        conn.execute(
+            "UPDATE channels SET supported_models = ?, updated_at = ? WHERE supported_models IS NULL",
+            (_default_supported_models_json(), _utc_now()),
+        )
         _ensure_gateway_state(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         if channel_count == 0:
@@ -337,7 +465,7 @@ def _init_db() -> None:
                 INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, proxy_url, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, None, None, now, now),
+                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, _default_supported_models_json(), None, now, now),
             )
             conn.execute(
                 """
@@ -449,16 +577,22 @@ def _config_payload(request: Request, include_private: bool) -> dict[str, Any]:
         state = _get_gateway_state(conn) if include_private else None
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
         enabled_channel_count = conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]
+        failure_threshold = _get_failure_threshold(conn)
+        failure_threshold_configured = _failure_threshold_configured(conn)
+        model_count = len(_models_payload(conn))
 
     payload = {
         "originator": ORIGINATOR,
         "version": CODEX_VERSION,
         "user_agent": _codex_user_agent(),
         "authorization": "client_api_key_or_channel_downstream_api_key",
-        "failure_threshold": FAILURE_THRESHOLD,
+        "failure_threshold": failure_threshold,
+        "failure_threshold_default": DEFAULT_FAILURE_THRESHOLD,
+        "failure_threshold_configured": failure_threshold_configured,
         "cooldown_seconds": COOLDOWN_SECONDS,
         "channel_count": channel_count,
         "enabled_channel_count": enabled_channel_count,
+        "model_count": model_count,
     }
     if include_private:
         assert state is not None
@@ -735,7 +869,8 @@ def _record_channel_result(
             if row and row["cooldown_until"] is not None and float(row["cooldown_until"]) <= now:
                 previous_failures = 0
             failures = previous_failures + 1
-            cooldown_until = now + COOLDOWN_SECONDS if failures >= FAILURE_THRESHOLD else None
+            failure_threshold = _get_failure_threshold(conn)
+            cooldown_until = now + COOLDOWN_SECONDS if failures >= failure_threshold else None
             conn.execute(
                 """
                 INSERT INTO channel_runtime(channel_id, consecutive_failures, cooldown_until, last_failure_at, updated_at)
@@ -771,6 +906,7 @@ def _select_channels(request: Request, model: str | None = None) -> list[dict[st
         ).fetchall()
 
     groups: dict[int, list[dict[str, Any]]] = {}
+    authorized_channel_count = 0
     for row in rows:
         channel = dict(row)
         if (
@@ -778,18 +914,14 @@ def _select_channels(request: Request, model: str | None = None) -> list[dict[st
             and not _channel_accepts_client_key(channel, client_token)
         ):
             continue
+        authorized_channel_count += 1
         if model:
-            raw = channel.get("supported_models")
-            if raw:
-                try:
-                    allowed_models = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                if model not in allowed_models:
-                    continue
+            allowed_models = _parse_model_list(channel.get("supported_models"))
+            if model not in allowed_models:
+                continue
         groups.setdefault(int(channel["priority"]), []).append(channel)
 
-    if rows and not groups:
+    if rows and authorized_channel_count == 0:
         raise GatewayError(
             "Invalid API key",
             status_code=401,
@@ -866,11 +998,7 @@ def _public_channel(
     now = _now_ts()
     active_cooldown = cooldown_until is not None and float(cooldown_until) > now
     consecutive_failures = int(channel.get("consecutive_failures") or 0) if active_cooldown or cooldown_until is None else 0
-    raw_models = channel.get("supported_models")
-    try:
-        parsed_models = json.loads(raw_models) if raw_models else None
-    except (json.JSONDecodeError, TypeError):
-        parsed_models = None
+    parsed_models = _parse_model_list(channel.get("supported_models"))
     result = {
         "id": channel["id"],
         "name": channel["name"],
@@ -982,21 +1110,24 @@ def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, 
 
     if "supported_models" in body:
         raw = body["supported_models"]
-        if raw is None:
-            values["supported_models"] = None
-        elif isinstance(raw, list):
+        if isinstance(raw, list):
             if not raw:
                 raise GatewayError("supported_models must not be empty", 400, "invalid_supported_models", param="supported_models")
             models = []
+            seen_models: set[str] = set()
             for item in raw:
                 if not isinstance(item, str) or not item.strip():
                     raise GatewayError("Each model in supported_models must be a non-empty string", 400, "invalid_supported_models", param="supported_models")
-                models.append(item.strip())
-            values["supported_models"] = json.dumps(models)
+                model_id = item.strip()
+                if model_id in seen_models:
+                    continue
+                models.append(model_id)
+                seen_models.add(model_id)
+            values["supported_models"] = json.dumps(models, ensure_ascii=False)
         else:
-            raise GatewayError("supported_models must be an array or null", 400, "invalid_supported_models", param="supported_models")
+            raise GatewayError("supported_models must be a non-empty array", 400, "invalid_supported_models", param="supported_models")
     elif not partial:
-        values["supported_models"] = None
+        raise GatewayError("supported_models must be a non-empty array", 400, "invalid_supported_models", param="supported_models")
 
     if "proxy_url" in body:
         raw = body["proxy_url"]
@@ -1352,7 +1483,7 @@ def config(request: Request):
 
 @app.get("/v1/models")
 def list_models():
-    return {"object": "list", "data": MODELS}
+    return {"object": "list", "data": _models_payload()}
 
 
 @app.post("/v1/responses")
@@ -1394,6 +1525,27 @@ def admin_session(request: Request):
 @app.get("/admin/config")
 def admin_config(request: Request):
     _require_admin(request)
+    return _config_payload(request, include_private=True)
+
+
+@app.patch("/admin/config")
+async def update_admin_config(request: Request):
+    _require_admin(request)
+    body = await _read_json_body(request)
+    allowed = {"failure_threshold"}
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise GatewayError(f"Unknown config fields: {', '.join(unknown)}", 400, "unknown_config_fields")
+
+    if "failure_threshold" in body:
+        threshold = _validate_failure_threshold(body["failure_threshold"])
+        with _connect_db() as conn:
+            if threshold is None:
+                conn.execute("DELETE FROM gateway_state WHERE key = ?", (FAILURE_THRESHOLD_KEY,))
+            else:
+                _upsert_gateway_setting(conn, FAILURE_THRESHOLD_KEY, str(threshold))
+            conn.commit()
+
     return _config_payload(request, include_private=True)
 
 
@@ -1552,7 +1704,7 @@ async def test_channel(request: Request, channel_id: str):
     try:
         state = _get_gateway_state()
         headers = _codex_headers(request, state, channel)
-        test_body = {"model": model, "input": "ping", "max_output_tokens": 16}
+        test_body = {"model": model, "input": "ping", "max_output_tokens": 1024}
         test_body = _ensure_input_array(test_body)
         test_body = _ensure_client_metadata(request, test_body, state)
         test_body = _ensure_responses_include(test_body)
