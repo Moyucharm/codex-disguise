@@ -98,6 +98,7 @@ class StreamResult(NamedTuple):
     channel: dict[str, Any]
     failover_count: int
     started_at: float
+    is_global_key: bool
 
 
 class SecretValue(NamedTuple):
@@ -836,6 +837,7 @@ def _record_channel_result(
     error_code: str | None,
     latency_ms: int,
     affects_runtime: bool,
+    is_global_key: bool = True,
 ) -> None:
     now = _now_ts()
     with _connect_db() as conn:
@@ -866,11 +868,21 @@ def _record_channel_result(
                 (channel_id,),
             ).fetchone()
             previous_failures = int(row["consecutive_failures"] if row else 0)
-            if row and row["cooldown_until"] is not None and float(row["cooldown_until"]) <= now:
+            in_cooldown = row is not None and row["cooldown_until"] is not None and float(row["cooldown_until"]) > now
+            if row and row["cooldown_until"] is not None and not in_cooldown:
                 previous_failures = 0
             failures = previous_failures + 1
             failure_threshold = _get_failure_threshold(conn)
-            cooldown_until = now + COOLDOWN_SECONDS if failures >= failure_threshold else None
+            reached_threshold = failures >= failure_threshold
+            if is_global_key:
+                cooldown_until = now + COOLDOWN_SECONDS if reached_threshold else None
+            else:
+                if reached_threshold and not in_cooldown:
+                    cooldown_until = now + COOLDOWN_SECONDS
+                elif reached_threshold and in_cooldown:
+                    cooldown_until = float(row["cooldown_until"])
+                else:
+                    cooldown_until = None
             conn.execute(
                 """
                 INSERT INTO channel_runtime(channel_id, consecutive_failures, cooldown_until, last_failure_at, updated_at)
@@ -886,8 +898,9 @@ def _record_channel_result(
         conn.commit()
 
 
-def _select_channels(request: Request, model: str | None = None) -> list[dict[str, Any]]:
+def _select_channels(request: Request, model: str | None = None) -> tuple[list[dict[str, Any]], bool]:
     client_token = _request_bearer_token(request)
+    is_global_key = secrets.compare_digest(client_token, request.app.state.client_api_key)
     with _connect_db() as conn:
         now = _now_ts()
         rows = conn.execute(
@@ -899,20 +912,16 @@ def _select_channels(request: Request, model: str | None = None) -> list[dict[st
                 r.cooldown_until, r.last_success_at, r.last_failure_at
             FROM channels c
             LEFT JOIN channel_runtime r ON r.channel_id = c.id
-            WHERE c.enabled = 1 AND (r.cooldown_until IS NULL OR r.cooldown_until <= ?)
+            WHERE c.enabled = 1
             ORDER BY c.priority DESC, c.created_at ASC
             """,
-            (now,),
         ).fetchall()
 
     groups: dict[int, list[dict[str, Any]]] = {}
     authorized_channel_count = 0
     for row in rows:
         channel = dict(row)
-        if (
-            not secrets.compare_digest(client_token, request.app.state.client_api_key)
-            and not _channel_accepts_client_key(channel, client_token)
-        ):
+        if not is_global_key and not _channel_accepts_client_key(channel, client_token):
             continue
         authorized_channel_count += 1
         if model:
@@ -933,8 +942,13 @@ def _select_channels(request: Request, model: str | None = None) -> list[dict[st
     for priority in sorted(groups.keys(), reverse=True):
         group = groups[priority]
         random.shuffle(group)
-        selected.extend(group)
-    return selected
+        for channel in group:
+            if is_global_key:
+                cooldown_until = channel.get("cooldown_until")
+                if cooldown_until is not None and float(cooldown_until) > now:
+                    continue
+            selected.append(channel)
+    return selected, is_global_key
 
 
 def _stats_for_channel(conn: sqlite3.Connection, channel_id: str) -> dict[str, Any]:
@@ -1214,7 +1228,7 @@ def _upstream_error_from_bytes(
 
 
 async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -> UpstreamResult:
-    channels = _select_channels(request, body.get("model"))
+    channels, is_global_key = _select_channels(request, body.get("model"))
     if not channels:
         raise GatewayError("No available channels", 503, "no_available_channels")
 
@@ -1239,13 +1253,13 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
             response = await client.post(_upstream_responses_url(channel), headers=headers, json=body)
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True)
+            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
             last_error_message = "Upstream request timed out"
             failed_attempts += 1
             continue
         except httpx.RequestError as exc:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True)
+            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True, is_global_key)
             last_error_message = str(exc)
             failed_attempts += 1
             continue
@@ -1260,6 +1274,7 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
             None if success else "upstream_error",
             latency_ms,
             should_failover,
+            is_global_key,
         )
 
         if success or not should_failover:
@@ -1293,7 +1308,7 @@ async def _close_upstream_stream(stream_context: Any) -> None:
 
 async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> StreamResult | JSONResponse:
     try:
-        channels = _select_channels(request, body.get("model"))
+        channels, is_global_key = _select_channels(request, body.get("model"))
     except GatewayError as exc:
         return _gateway_error_response(exc)
     if not channels:
@@ -1319,19 +1334,19 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
             stream_context, response = await _open_upstream_stream(client, channel, headers, body)
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True)
+            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
             last_error_message = "Upstream request timed out"
             failed_attempts += 1
             continue
         except httpx.RequestError as exc:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True)
+            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True, is_global_key)
             last_error_message = str(exc)
             failed_attempts += 1
             continue
 
         if _status_is_success(response.status_code):
-            return StreamResult(stream_context, response, channel, failed_attempts, started_at)
+            return StreamResult(stream_context, response, channel, failed_attempts, started_at, is_global_key)
 
         try:
             body_bytes = await response.aread()
@@ -1347,6 +1362,7 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
             "upstream_error",
             latency_ms,
             should_failover,
+            is_global_key,
         )
         last_error_response = _upstream_error_from_bytes(
             response.status_code,
@@ -1373,12 +1389,12 @@ async def _raw_sse_bytes(result: StreamResult) -> AsyncIterator[bytes]:
         success = True
     except Exception:
         latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True)
+        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True, result.is_global_key)
         raise
     finally:
         if success:
             latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-            _record_channel_result(result.channel["id"], True, result.response.status_code, None, latency_ms, False)
+            _record_channel_result(result.channel["id"], True, result.response.status_code, None, latency_ms, False, result.is_global_key)
         await _close_upstream_stream(result.stream_context)
 
 
