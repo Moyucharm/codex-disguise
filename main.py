@@ -1782,3 +1782,30 @@ def all_channel_stats(request: Request):
         rows = _list_channel_rows(conn)
         stats = _stats_for_channels(conn, [row["id"] for row in rows])
         return {"object": "list", "data": [_public_channel(row, stats=stats.get(row["id"])) for row in rows]}
+
+
+@app.delete("/admin/models/{model_id:path}")
+def delete_custom_model(request: Request, model_id: str):
+    _require_admin(request)
+    model_id = model_id.strip()
+    if any(m["id"] == model_id for m in DEFAULT_MODELS):
+        raise GatewayError("Cannot delete a built-in model", status_code=400)
+    conn = _connect_db()
+    try:
+        rows = conn.execute("SELECT id, supported_models FROM channels WHERE supported_models IS NOT NULL").fetchall()
+        now = _utc_now()
+        changed = False
+        for row in rows:
+            models = _parse_model_list(row["supported_models"])
+            if model_id not in models:
+                continue
+            models.remove(model_id)
+            new_json = json.dumps(models, ensure_ascii=False) if models else None
+            conn.execute("UPDATE channels SET supported_models = ?, updated_at = ? WHERE id = ?", (new_json, now, row["id"]))
+            changed = True
+        if not changed:
+            raise GatewayError(f"Model '{model_id}' not found in any channel", status_code=404)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"deleted": True, "model_id": model_id}

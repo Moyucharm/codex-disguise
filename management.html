@@ -794,6 +794,22 @@
       font-size: 12px;
     }
 
+    .model-delete {
+      all: unset;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 4px;
+      border-radius: 4px;
+      opacity: 0.6;
+      transition: opacity 0.15s;
+    }
+    .model-delete:hover {
+      opacity: 1;
+      color: var(--danger, #e74c3c);
+    }
+
     .model-actions button {
       min-width: 0;
       min-height: 28px;
@@ -1933,15 +1949,33 @@
           const sourceText = model.owned_by === "custom" && usingChannels.length
             ? `custom · ${usingChannels.map((name) => `渠道 ${name}`).join("、")}`
             : `${model.owned_by || "-"} · ${model.object || "model"}`;
+          const isCustom = model.owned_by === "custom";
           return `
             <article class="model-card${animateClass}" style="animation-delay: ${Math.min(index * 40, 400)}ms">
               <div class="model-card-header">
                 <div class="model-id mono">${escapeHtml(modelId)}</div>
+                ${isCustom ? `<button type="button" class="model-delete" data-model-id="${escapeHtml(modelId)}" title="删除此自定义模型">×</button>` : ""}
               </div>
               <div class="model-meta">${escapeHtml(sourceText)}</div>
             </article>
           `;
         }).join("");
+        dom.modelGrid.querySelectorAll(".model-delete").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const modelId = btn.dataset.modelId;
+            if (!confirm(`确定要删除自定义模型 "${modelId}" 吗？将从所有渠道中移除。`)) return;
+            try {
+              setBusy(true);
+              await request(`/admin/models/${encodeURI(modelId)}`, { method: "DELETE", admin: true });
+              await refreshAll({ force: true });
+              showNotice("模型已删除", "success");
+            } catch (err) {
+              showNotice(err.message, "error");
+            } finally {
+              setBusy(false);
+            }
+          });
+        });
       }
 
       function renderState() {
@@ -2092,7 +2126,6 @@
         if (!builtInModels.length) builtInModels.push("gpt-5.5", "gpt-5.4", "gpt-5.3-codex");
         const allModels = uniqueModels([
           ...builtInModels,
-          ...state.models.map((m) => m.id).filter(Boolean),
           ...selected
         ]);
         renderChannelModelChecks(allModels, channel ? selected : builtInModels);
