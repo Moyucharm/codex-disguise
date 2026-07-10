@@ -66,6 +66,9 @@ DEFAULT_MODELS = [
     {"id": "gpt-5.5", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.4", "object": "model", "created": 1700000000, "owned_by": "openai"},
     {"id": "gpt-5.3-codex", "object": "model", "created": 1700000000, "owned_by": "openai"},
+    {"id": "gpt-5.6-sol", "object": "model", "created": 1700000000, "owned_by": "openai"},
+    {"id": "gpt-5.6-terra", "object": "model", "created": 1700000000, "owned_by": "openai"},
+    {"id": "gpt-5.6-luna", "object": "model", "created": 1700000000, "owned_by": "openai"},
 ]
 
 

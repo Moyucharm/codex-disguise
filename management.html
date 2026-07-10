@@ -334,17 +334,6 @@
       font-size: 12px;
     }
 
-    .remember {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      min-height: 36px;
-      color: var(--muted);
-      white-space: nowrap;
-    }
-
-    .remember input { width: 16px; height: 16px; min-height: 0; padding: 0; }
-
     .primary {
       background: var(--accent);
       border-color: var(--accent);
@@ -873,25 +862,69 @@
       color: var(--muted);
     }
 
-    .checkbox-line input { width: 16px; height: 16px; min-height: 0; }
+    .checkbox-line input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      min-height: 0;
+      flex: 0 0 auto;
+      border: 2px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--surface);
+      cursor: pointer;
+      transition: border-color var(--duration-fast) var(--ease-out),
+                  background-color var(--duration-fast) var(--ease-out),
+                  box-shadow var(--duration-fast) var(--ease-out),
+                  transform var(--duration-fast) var(--ease-spring);
+      position: relative;
+    }
+
+    .checkbox-line input[type="checkbox"]:hover {
+      border-color: var(--accent);
+      transform: scale(1.06);
+    }
+
+    .checkbox-line input[type="checkbox"]:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .checkbox-line input[type="checkbox"]:checked::after {
+      content: "✓";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1;
+    }
 
     .model-checks {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px 16px;
-      padding: 6px 0;
+      gap: 6px;
+      padding: 4px 0;
     }
 
-    .model-checks label {
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    .model-checks .chip {
       cursor: pointer;
-      color: var(--text);
+      user-select: none;
       font-size: 13px;
     }
 
-    .model-checks input { width: 15px; height: 15px; min-height: 0; }
+    .chip-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip-group .chip {
+      cursor: pointer;
+      user-select: none;
+    }
 
     .channel-model-add {
       display: grid;
@@ -1028,7 +1061,7 @@
         </label>
       </div>
       <div class="login-actions">
-        <label class="remember">
+        <label class="checkbox-line">
           <input id="loginRememberToken" type="checkbox">
           <span>本机保存</span>
         </label>
@@ -1219,10 +1252,10 @@
           </label>
           <label>
             <span class="field-label">状态</span>
-            <select id="channelEnabled">
-              <option value="true">启用</option>
-              <option value="false">禁用</option>
-            </select>
+            <div class="chip-group" id="channelEnabled" role="radiogroup">
+              <button type="button" class="chip active" data-value="true">启用</button>
+              <button type="button" class="chip" data-value="false">禁用</button>
+            </div>
           </label>
           <label class="wide">
             <span class="field-label">上游 API Key</span>
@@ -1279,7 +1312,7 @@
           </label>
           <label class="wide">
             <span class="field-label">测试模型</span>
-            <select id="testModel"></select>
+            <div class="chip-group" id="testModel" role="radiogroup"></div>
             <div class="field-help">默认使用 gpt-5.4。测试超时 60 秒，空响应或空内容会判定为失败。</div>
           </label>
         </div>
@@ -1446,6 +1479,12 @@
         });
         dom.channelForm.addEventListener("submit", saveChannel);
         dom.testForm.addEventListener("submit", runChannelTest);
+        dom.channelEnabled.addEventListener("click", (event) => {
+          const chip = event.target.closest(".chip");
+          if (!chip) return;
+          dom.channelEnabled.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+          chip.classList.add("active");
+        });
       }
 
       function setView(view) {
@@ -1693,7 +1732,7 @@
       }
 
       function canRunChannelTest() {
-        return Boolean(dom.testModel?.value) && !dom.testModel.disabled;
+        return Boolean(dom.testModel.querySelector(".chip"));
       }
 
       function setBusy(value) {
@@ -2035,7 +2074,9 @@
         dom.channelName.value = channel?.name || "";
         dom.channelUrl.value = channel?.upstream_url || "";
         dom.channelPriority.value = channel?.priority ?? 0;
-        dom.channelEnabled.value = channel?.enabled === false ? "false" : "true";
+        dom.channelEnabled.querySelectorAll(".chip").forEach((chip) => {
+          chip.classList.toggle("active", chip.dataset.value === (channel?.enabled === false ? "false" : "true"));
+        });
         dom.channelUpstreamKey.value = "";
         dom.channelDownstreamKey.value = "";
         dom.channelProxyUrl.value = channel?.proxy_url || "";
@@ -2074,9 +2115,14 @@
       function renderChannelModelChecks(modelIds, selectedModels) {
         const selected = new Set(uniqueModels(selectedModels));
         dom.channelModelChecks.innerHTML = uniqueModels(modelIds).map((id) => {
-          const checked = selected.has(id) ? "checked" : "";
-          return `<label><input type="checkbox" value="${escapeHtml(id)}" ${checked}> ${escapeHtml(id)}</label>`;
+          const active = selected.has(id) ? "active" : "";
+          return `<button type="button" class="chip ${active}" data-model-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`;
         }).join("");
+        dom.channelModelChecks.querySelectorAll("[data-model-id]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            btn.classList.toggle("active");
+          });
+        });
       }
 
       function addChannelModel() {
@@ -2085,9 +2131,9 @@
           showNotice("请输入模型名", "error");
           return;
         }
-        const inputs = [...dom.channelModelChecks.querySelectorAll("input")];
-        const modelIds = inputs.map((input) => input.value);
-        const selected = inputs.filter((input) => input.checked).map((input) => input.value);
+        const chips = [...dom.channelModelChecks.querySelectorAll(".chip")];
+        const modelIds = chips.map((chip) => chip.dataset.modelId);
+        const selected = chips.filter((chip) => chip.classList.contains("active")).map((chip) => chip.dataset.modelId);
         if (!modelIds.includes(modelId)) {
           modelIds.push(modelId);
         }
@@ -2107,21 +2153,24 @@
         renderModelOptions(channel.supported_models);
         renderTestResult();
         dom.testDialog.showModal();
-        dom.testModel.focus();
       }
 
       function renderModelOptions(supportedModels) {
         const filtered = Array.isArray(supportedModels) ? uniqueModels(supportedModels) : [];
         if (!filtered.length) {
-          dom.testModel.innerHTML = `<option value="">无可测试模型</option>`;
-          dom.testModel.value = "";
-          dom.testModel.disabled = true;
+          dom.testModel.innerHTML = `<span class="muted">无可测试模型</span>`;
           dom.runChannelTest.disabled = true;
           return;
         }
-        dom.testModel.disabled = false;
-        dom.testModel.innerHTML = filtered.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join("");
-        dom.testModel.value = filtered[0];
+        dom.testModel.innerHTML = filtered.map((id, i) =>
+          `<button type="button" class="chip${i === 0 ? " active" : ""}" data-value="${escapeHtml(id)}">${escapeHtml(id)}</button>`
+        ).join("");
+        dom.testModel.querySelectorAll(".chip").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            dom.testModel.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+            btn.classList.add("active");
+          });
+        });
         dom.runChannelTest.disabled = state.busy;
       }
 
@@ -2132,7 +2181,8 @@
           showNotice("请求处理中，请稍后再试", "");
           return;
         }
-        const model = dom.testModel.value.trim();
+        const activeChip = dom.testModel.querySelector(".chip.active");
+        const model = activeChip ? activeChip.dataset.value.trim() : "";
         if (!model) {
           showNotice("当前渠道没有可测试模型", "error");
           return;
@@ -2174,7 +2224,7 @@
         dom.testResult.innerHTML = `
           <div class="test-result-title">${success ? "测试成功" : "测试失败"}</div>
           <div class="test-result-grid">
-            <div><span class="muted">模型</span><br><span class="mono">${escapeHtml(result.model || dom.testModel.value || "gpt-5.4")}</span></div>
+            <div><span class="muted">模型</span><br><span class="mono">${escapeHtml(result.model || (dom.testModel.querySelector(".chip.active")?.dataset.value ?? "") || "gpt-5.4")}</span></div>
             <div><span class="muted">耗时</span><br><span class="mono">${escapeHtml(result.latency_ms ?? 0)} ms</span></div>
             <div><span class="muted">HTTP 状态</span><br><span class="mono">${escapeHtml(result.status_code ?? "-")}</span></div>
             <div class="test-result-message"><span class="muted">结果</span><br>${escapeHtml(result.message || "-")}</div>
@@ -2192,13 +2242,13 @@
           name: dom.channelName.value.trim(),
           upstream_url: dom.channelUrl.value.trim(),
           priority: Number(dom.channelPriority.value || 0),
-          enabled: dom.channelEnabled.value === "true"
+          enabled: dom.channelEnabled.querySelector(".chip.active")?.dataset.value === "true"
         };
         if (!body.upstream_url.startsWith("http://") && !body.upstream_url.startsWith("https://")) {
           showNotice("上游地址必须以 http:// 或 https:// 开头", "error");
           return;
         }
-        const checkedModels = [...dom.channelModelChecks.querySelectorAll("input:checked")].map((el) => el.value);
+        const checkedModels = [...dom.channelModelChecks.querySelectorAll(".chip.active")].map((el) => el.dataset.modelId);
         if (!checkedModels.length) {
           showNotice("至少选择一个模型", "error");
           return;
