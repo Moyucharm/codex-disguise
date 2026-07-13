@@ -5,11 +5,13 @@ import platform
 import random
 import secrets
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, AsyncIterator, NamedTuple
 
 import httpx
@@ -20,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "gateway.db"
+CONFIG_PATH = DATA_DIR / "config.json"
 LEGACY_STATE_PATH = DATA_DIR / "state.json"
 ENV_PATH = APP_DIR / ".env"
 MANAGEMENT_HTML_PATH = APP_DIR / "management.html"
@@ -33,10 +36,19 @@ LITE_ORIGINATOR = "codex_exec"
 CODEX_VERSION = "0.144.2"
 TERMINAL_UA = ""
 DEFAULT_FAILURE_THRESHOLD = 3
-COOLDOWN_SECONDS = 300
+DEFAULT_COOLDOWN_MINUTES = 5
+MIN_COOLDOWN_MINUTES = 5
+MAX_COOLDOWN_MINUTES = 180
 STATS_WINDOW_SECONDS = 24 * 60 * 60
+HEALTH_BUCKET_SECONDS = 5 * 60
+HEALTH_BUCKET_COUNT = 15
 DB_BUSY_TIMEOUT_MS = 5000
 FAILURE_THRESHOLD_KEY = "failure_threshold"
+COOLDOWN_MINUTES_KEY = "cooldown_minutes"
+
+_cooldown_reasons: dict[str, str] = {}
+_channel_health_buckets: dict[str, dict[int, dict[str, int]]] = {}
+_channel_health_lock = Lock()
 
 TRACE_RESPONSE_HEADERS = (
     "x-request-id",
@@ -163,6 +175,68 @@ def _ts_to_iso(value: float | None) -> str | None:
     if value is None:
         return None
     return datetime.fromtimestamp(value, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _health_bucket_start(value: float) -> int:
+    return int(value // HEALTH_BUCKET_SECONDS) * HEALTH_BUCKET_SECONDS
+
+
+def _health_state(success: int, failure: int) -> str:
+    if success and failure:
+        return "mixed"
+    if success:
+        return "success"
+    if failure:
+        return "failure"
+    return "empty"
+
+
+def _channel_health_snapshot(channel_id: str, now: float | None = None) -> list[dict[str, Any]]:
+    current_start = _health_bucket_start(_now_ts() if now is None else now)
+    starts = [
+        current_start - (HEALTH_BUCKET_COUNT - 1 - index) * HEALTH_BUCKET_SECONDS
+        for index in range(HEALTH_BUCKET_COUNT)
+    ]
+    with _channel_health_lock:
+        channel_buckets = _channel_health_buckets.get(channel_id, {})
+        counts_by_start = {
+            start: dict(channel_buckets.get(start, {}))
+            for start in starts
+        }
+
+    snapshot: list[dict[str, Any]] = []
+    for start in starts:
+        counts = counts_by_start[start]
+        success = int(counts.get("success") or 0)
+        failure = int(counts.get("failure") or 0)
+        snapshot.append({
+            "start_at": _ts_to_iso(float(start)),
+            "end_at": _ts_to_iso(float(start + HEALTH_BUCKET_SECONDS)),
+            "success": success,
+            "failure": failure,
+            "total": success + failure,
+            "state": _health_state(success, failure),
+        })
+    return snapshot
+
+
+def _record_channel_health(channel_id: str, success: bool, now: float | None = None) -> None:
+    timestamp = _now_ts() if now is None else now
+    bucket_start = _health_bucket_start(timestamp)
+    cutoff = bucket_start - (HEALTH_BUCKET_COUNT - 1) * HEALTH_BUCKET_SECONDS
+    key = "success" if success else "failure"
+    with _channel_health_lock:
+        channel_buckets = _channel_health_buckets.setdefault(channel_id, {})
+        bucket = channel_buckets.setdefault(bucket_start, {"success": 0, "failure": 0})
+        bucket[key] = int(bucket.get(key) or 0) + 1
+        for start in list(channel_buckets):
+            if start < cutoff:
+                del channel_buckets[start]
+
+
+def _clear_channel_health(channel_id: str) -> None:
+    with _channel_health_lock:
+        _channel_health_buckets.pop(channel_id, None)
 
 
 def _new_prefixed_id(prefix: str) -> str:
@@ -297,6 +371,112 @@ def _upsert_gateway_setting(conn: sqlite3.Connection, key: str, value: str) -> N
         """,
         (key, value, _utc_now()),
     )
+
+
+def _read_app_config() -> dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_app_config(config: dict[str, Any]) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=CONFIG_PATH.parent,
+            prefix=f".{CONFIG_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            json.dump(config, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            temp_path = handle.name
+        os.replace(temp_path, CONFIG_PATH)
+        temp_path = None
+    finally:
+        if temp_path:
+            try:
+                Path(temp_path).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _ensure_app_config() -> None:
+    if not CONFIG_PATH.exists():
+        _write_app_config({COOLDOWN_MINUTES_KEY: DEFAULT_COOLDOWN_MINUTES})
+
+
+def _parse_cooldown_minutes(raw: Any) -> int | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, float) and not raw.is_integer():
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        minutes = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if not MIN_COOLDOWN_MINUTES <= minutes <= MAX_COOLDOWN_MINUTES:
+        return None
+    return minutes
+
+
+def _get_cooldown_minutes() -> int:
+    configured = _parse_cooldown_minutes(_read_app_config().get(COOLDOWN_MINUTES_KEY))
+    return configured if configured is not None else DEFAULT_COOLDOWN_MINUTES
+
+
+def _get_cooldown_seconds() -> int:
+    return _get_cooldown_minutes() * 60
+
+
+def _cooldown_minutes_configured() -> bool:
+    configured = _parse_cooldown_minutes(_read_app_config().get(COOLDOWN_MINUTES_KEY))
+    return configured is not None and configured != DEFAULT_COOLDOWN_MINUTES
+
+
+def _validate_cooldown_minutes(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        raise GatewayError(
+            "cooldown_minutes must be an integer between 5 and 180",
+            400,
+            "invalid_cooldown_minutes",
+            param="cooldown_minutes",
+        )
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise GatewayError(
+            "cooldown_minutes must be an integer between 5 and 180",
+            400,
+            "invalid_cooldown_minutes",
+            param="cooldown_minutes",
+        )
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError) as exc:
+        raise GatewayError(
+            "cooldown_minutes must be an integer between 5 and 180",
+            400,
+            "invalid_cooldown_minutes",
+            param="cooldown_minutes",
+        ) from exc
+    if not MIN_COOLDOWN_MINUTES <= minutes <= MAX_COOLDOWN_MINUTES:
+        raise GatewayError(
+            "cooldown_minutes must be between 5 and 180",
+            400,
+            "invalid_cooldown_minutes",
+            param="cooldown_minutes",
+        )
+    return minutes
 
 
 def _parse_model_list(raw: str | None) -> list[str]:
@@ -532,6 +712,7 @@ def _init_db() -> None:
                 (channel_id, _now_ts()),
             )
         conn.commit()
+    _ensure_app_config()
 
 
 @asynccontextmanager
@@ -630,6 +811,7 @@ def _error_response(
 
 
 def _config_payload(request: Request, include_private: bool) -> dict[str, Any]:
+    cooldown_minutes = _get_cooldown_minutes()
     with _connect_db() as conn:
         state = _get_gateway_state(conn) if include_private else None
         channel_count = conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0]
@@ -646,7 +828,10 @@ def _config_payload(request: Request, include_private: bool) -> dict[str, Any]:
         "failure_threshold": failure_threshold,
         "failure_threshold_default": DEFAULT_FAILURE_THRESHOLD,
         "failure_threshold_configured": failure_threshold_configured,
-        "cooldown_seconds": COOLDOWN_SECONDS,
+        "cooldown_minutes": cooldown_minutes,
+        "cooldown_minutes_default": DEFAULT_COOLDOWN_MINUTES,
+        "cooldown_minutes_configured": _cooldown_minutes_configured(),
+        "cooldown_seconds": cooldown_minutes * 60,
         "channel_count": channel_count,
         "enabled_channel_count": enabled_channel_count,
         "model_count": model_count,
@@ -656,6 +841,7 @@ def _config_payload(request: Request, include_private: bool) -> dict[str, Any]:
         payload.update(
             {
                 "database_path": str(DB_PATH),
+                "config_path": str(CONFIG_PATH),
                 "admin_token_source": request.app.state.admin_token_source,
                 "client_api_key_source": request.app.state.client_api_key_source,
                 "state": _public_state(state),
@@ -1036,6 +1222,53 @@ def _status_should_failover(status_code: int) -> bool:
     return status_code in RETRYABLE_STATUS_CODES or status_code >= 500
 
 
+def _normalize_error_reason(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    text = "".join(char for char in text if char.isprintable())
+    return text[:500] or None
+
+
+def _error_reason_from_data(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if isinstance(error, dict):
+        for key in ("message", "detail", "code", "type"):
+            reason = _normalize_error_reason(error.get(key))
+            if reason:
+                return reason
+    else:
+        reason = _normalize_error_reason(error)
+        if reason:
+            return reason
+    for key in ("message", "detail"):
+        reason = _normalize_error_reason(data.get(key))
+        if reason:
+            return reason
+    return None
+
+
+def _upstream_error_reason_from_bytes(status_code: int, body: bytes) -> str:
+    text = body.decode("utf-8", errors="replace").strip()
+    if text:
+        try:
+            reason = _error_reason_from_data(json.loads(text))
+        except json.JSONDecodeError:
+            reason = None
+        if reason:
+            return reason
+        reason = _normalize_error_reason(text)
+        if reason:
+            return reason
+    return f"Upstream returned HTTP {status_code}"
+
+
+def _upstream_error_reason(response: httpx.Response) -> str:
+    return _upstream_error_reason_from_bytes(response.status_code, response.content)
+
+
 def _record_channel_result(
     channel_id: str,
     success: bool,
@@ -1044,8 +1277,10 @@ def _record_channel_result(
     latency_ms: int,
     affects_runtime: bool,
     is_global_key: bool = True,
+    error_reason: str | None = None,
 ) -> None:
     now = _now_ts()
+    normalized_reason = _normalize_error_reason(error_reason)
     with _connect_db() as conn:
         conn.execute(
             """
@@ -1068,6 +1303,7 @@ def _record_channel_result(
                 """,
                 (channel_id, now, now),
             )
+            _cooldown_reasons.pop(channel_id, None)
         elif affects_runtime:
             row = conn.execute(
                 "SELECT consecutive_failures, cooldown_until FROM channel_runtime WHERE channel_id = ?",
@@ -1081,10 +1317,10 @@ def _record_channel_result(
             failure_threshold = _get_failure_threshold(conn)
             reached_threshold = failures >= failure_threshold
             if is_global_key:
-                cooldown_until = now + COOLDOWN_SECONDS if reached_threshold else None
+                cooldown_until = now + _get_cooldown_seconds() if reached_threshold else None
             else:
                 if reached_threshold and not in_cooldown:
-                    cooldown_until = now + COOLDOWN_SECONDS
+                    cooldown_until = now + _get_cooldown_seconds()
                 elif reached_threshold and in_cooldown:
                     cooldown_until = float(row["cooldown_until"])
                 else:
@@ -1103,6 +1339,19 @@ def _record_channel_result(
             )
         conn.commit()
 
+    _record_channel_health(channel_id, success, now)
+
+    if success:
+        return
+    if not affects_runtime:
+        return
+    if cooldown_until is not None and float(cooldown_until) > now:
+        if not in_cooldown or channel_id not in _cooldown_reasons:
+            if normalized_reason:
+                _cooldown_reasons[channel_id] = normalized_reason
+    else:
+        _cooldown_reasons.pop(channel_id, None)
+
 
 def _select_channels(request: Request, model: str | None = None) -> tuple[list[dict[str, Any]], bool]:
     client_token = _request_bearer_token(request)
@@ -1118,7 +1367,6 @@ def _select_channels(request: Request, model: str | None = None) -> tuple[list[d
                 r.cooldown_until, r.last_success_at, r.last_failure_at
             FROM channels c
             LEFT JOIN channel_runtime r ON r.channel_id = c.id
-            WHERE c.enabled = 1
             ORDER BY c.priority DESC, c.created_at ASC
             """,
         ).fetchall()
@@ -1127,7 +1375,10 @@ def _select_channels(request: Request, model: str | None = None) -> tuple[list[d
     authorized_channel_count = 0
     for row in rows:
         channel = dict(row)
-        if not is_global_key and not _channel_accepts_client_key(channel, client_token):
+        if is_global_key:
+            if not channel["enabled"]:
+                continue
+        elif not _channel_accepts_client_key(channel, client_token):
             continue
         authorized_channel_count += 1
         if model:
@@ -1136,7 +1387,7 @@ def _select_channels(request: Request, model: str | None = None) -> tuple[list[d
                 continue
         groups.setdefault(int(channel["priority"]), []).append(channel)
 
-    if rows and authorized_channel_count == 0:
+    if not is_global_key and rows and authorized_channel_count == 0:
         raise GatewayError(
             "Invalid API key",
             status_code=401,
@@ -1217,6 +1468,8 @@ def _public_channel(
     last_failure_at = channel.get("last_failure_at")
     now = _now_ts()
     active_cooldown = cooldown_until is not None and float(cooldown_until) > now
+    if not active_cooldown:
+        _cooldown_reasons.pop(channel["id"], None)
     consecutive_failures = int(channel.get("consecutive_failures") or 0) if active_cooldown or cooldown_until is None else 0
     parsed_models = _parse_model_list(channel.get("supported_models"))
     result = {
@@ -1232,6 +1485,8 @@ def _public_channel(
         "proxy_url": channel.get("proxy_url"),
         "consecutive_failures": consecutive_failures,
         "cooldown_until": _ts_to_iso(float(cooldown_until)) if active_cooldown else None,
+        "cooldown_reason": _cooldown_reasons.get(channel["id"]) if active_cooldown else None,
+        "health_5m": _channel_health_snapshot(channel["id"]),
         "last_success_at": _ts_to_iso(float(last_success_at)) if last_success_at is not None else None,
         "last_failure_at": _ts_to_iso(float(last_failure_at)) if last_failure_at is not None else None,
         "created_at": channel.get("created_at"),
@@ -1482,13 +1737,31 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
             )
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
+            _record_channel_result(
+                channel["id"],
+                False,
+                None,
+                "upstream_timeout",
+                latency_ms,
+                True,
+                is_global_key,
+                "Upstream request timed out",
+            )
             last_error_message = "Upstream request timed out"
             failed_attempts += 1
             continue
         except httpx.RequestError as exc:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True, is_global_key)
+            _record_channel_result(
+                channel["id"],
+                False,
+                None,
+                "upstream_connection_error",
+                latency_ms,
+                True,
+                is_global_key,
+                str(exc) or "Upstream connection error",
+            )
             last_error_message = str(exc)
             failed_attempts += 1
             continue
@@ -1496,6 +1769,7 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         success = _status_is_success(response.status_code)
         should_failover = _status_should_failover(response.status_code)
+        error_reason = None if success else _upstream_error_reason(response)
         _record_channel_result(
             channel["id"],
             success,
@@ -1504,6 +1778,7 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
             latency_ms,
             should_failover,
             is_global_key,
+            error_reason,
         )
 
         if success or not should_failover:
@@ -1569,13 +1844,31 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
             )
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
+            _record_channel_result(
+                channel["id"],
+                False,
+                None,
+                "upstream_timeout",
+                latency_ms,
+                True,
+                is_global_key,
+                "Upstream request timed out",
+            )
             last_error_message = "Upstream request timed out"
             failed_attempts += 1
             continue
         except httpx.RequestError as exc:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            _record_channel_result(channel["id"], False, None, "upstream_connection_error", latency_ms, True, is_global_key)
+            _record_channel_result(
+                channel["id"],
+                False,
+                None,
+                "upstream_connection_error",
+                latency_ms,
+                True,
+                is_global_key,
+                str(exc) or "Upstream connection error",
+            )
             last_error_message = str(exc)
             failed_attempts += 1
             continue
@@ -1590,6 +1883,7 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         should_failover = _status_should_failover(response.status_code)
+        error_reason = _upstream_error_reason_from_bytes(response.status_code, body_bytes)
         _record_channel_result(
             channel["id"],
             False,
@@ -1598,6 +1892,7 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
             latency_ms,
             should_failover,
             is_global_key,
+            error_reason,
         )
         last_error_response = _upstream_error_from_bytes(
             response.status_code,
@@ -1622,9 +1917,18 @@ async def _raw_sse_bytes(result: StreamResult) -> AsyncIterator[bytes]:
         async for chunk in result.response.aiter_bytes():
             yield chunk
         success = True
-    except Exception:
+    except Exception as exc:
         latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True, result.is_global_key)
+        _record_channel_result(
+            result.channel["id"],
+            False,
+            result.response.status_code,
+            "stream_error",
+            latency_ms,
+            True,
+            result.is_global_key,
+            str(exc) or "Upstream stream error",
+        )
         raise
     finally:
         if success:
@@ -1723,9 +2027,18 @@ async def _json_response_from_stream_result(result: StreamResult, model: Any) ->
     try:
         body = await result.response.aread()
         success = True
-    except Exception:
+    except Exception as exc:
         latency_ms = int((time.perf_counter() - result.started_at) * 1000)
-        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True, result.is_global_key)
+        _record_channel_result(
+            result.channel["id"],
+            False,
+            result.response.status_code,
+            "stream_error",
+            latency_ms,
+            True,
+            result.is_global_key,
+            str(exc) or "Upstream stream error",
+        )
         raise
     finally:
         if success:
@@ -1909,19 +2222,32 @@ def admin_config(request: Request):
 async def update_admin_config(request: Request):
     _require_admin(request)
     body = await _read_json_body(request)
-    allowed = {"failure_threshold"}
+    allowed = {"failure_threshold", COOLDOWN_MINUTES_KEY}
     unknown = sorted(set(body) - allowed)
     if unknown:
         raise GatewayError(f"Unknown config fields: {', '.join(unknown)}", 400, "unknown_config_fields")
 
+    threshold: int | None = None
+    cooldown_minutes: int | None = None
     if "failure_threshold" in body:
         threshold = _validate_failure_threshold(body["failure_threshold"])
+    if COOLDOWN_MINUTES_KEY in body:
+        cooldown_minutes = _validate_cooldown_minutes(body[COOLDOWN_MINUTES_KEY])
+
+    if "failure_threshold" in body:
         with _connect_db() as conn:
             if threshold is None:
                 conn.execute("DELETE FROM gateway_state WHERE key = ?", (FAILURE_THRESHOLD_KEY,))
             else:
                 _upsert_gateway_setting(conn, FAILURE_THRESHOLD_KEY, str(threshold))
             conn.commit()
+    if COOLDOWN_MINUTES_KEY in body:
+        config = _read_app_config()
+        if cooldown_minutes is None:
+            config.pop(COOLDOWN_MINUTES_KEY, None)
+        else:
+            config[COOLDOWN_MINUTES_KEY] = cooldown_minutes
+        _write_app_config(config)
 
     return _config_payload(request, include_private=True)
 
@@ -2017,6 +2343,8 @@ def delete_channel(request: Request, channel_id: str):
         _get_channel_row(conn, channel_id)
         conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
         conn.commit()
+    _cooldown_reasons.pop(channel_id, None)
+    _clear_channel_health(channel_id)
     return {"deleted": True, "id": channel_id}
 
 
@@ -2058,6 +2386,7 @@ def reset_channel_runtime(request: Request, channel_id: str):
             (channel_id, now),
         )
         conn.commit()
+        _cooldown_reasons.pop(channel_id, None)
         return _public_channel(_get_channel_row(conn, channel_id), conn)
 
 

@@ -561,17 +561,19 @@
       table-layout: fixed;
     }
 
-    .channel-table th:nth-child(1), .channel-table td:nth-child(1) { width: 21%; }
-    .channel-table th:nth-child(2), .channel-table td:nth-child(2) { width: 23%; }
-    .channel-table th:nth-child(3), .channel-table td:nth-child(3) { width: 66px; }
-    .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 70px; }
-    .channel-table th:nth-child(5), .channel-table td:nth-child(5) { width: 92px; }
-    .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 86px; }
-    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 120px; }
-    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 98px; }
-    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 58px; }
-    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 88px; }
-    .channel-table th:nth-child(11), .channel-table td:nth-child(11) { width: 194px; }
+    .channel-table th:nth-child(1), .channel-table td:nth-child(1) { width: 16%; }
+    .channel-table th:nth-child(2), .channel-table td:nth-child(2) { width: 20%; }
+    .channel-table th:nth-child(3), .channel-table td:nth-child(3) { width: 62px; }
+    .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 62px; }
+    .channel-table th:nth-child(5), .channel-table td:nth-child(5) { width: 82px; }
+    .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 82px; }
+    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 110px; }
+    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 134px; }
+    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 86px; }
+    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 52px; }
+    .channel-table th:nth-child(11), .channel-table td:nth-child(11) { width: 90px; }
+    .channel-table th:nth-child(12), .channel-table td:nth-child(12) { width: 82px; }
+    .channel-table th:nth-child(13), .channel-table td:nth-child(13) { width: 194px; }
 
     th, td {
       padding: 11px 12px;
@@ -649,6 +651,33 @@
     .bad { color: var(--red); background: var(--red-soft); }
     .info { color: var(--blue); background: var(--blue-soft); }
     .idle { color: var(--muted); background: #efebe6; }
+
+    .health-grid {
+      display: grid;
+      grid-template-columns: repeat(15, 1fr);
+      gap: 3px;
+      width: 110px;
+      align-items: end;
+    }
+
+    .health-bar {
+      width: 100%;
+      height: 28px;
+      border-radius: 999px;
+      background: #d9d3ca;
+      transition: transform var(--duration-fast) var(--ease-out),
+                  filter var(--duration-fast) var(--ease-out);
+    }
+
+    .health-bar:hover {
+      transform: translateY(-2px);
+      filter: brightness(0.96);
+    }
+
+    .health-bar.success { background: #19bf68; }
+    .health-bar.failure { background: #cf3f3a; }
+    .health-bar.mixed { background: #d99a22; }
+    .health-bar.empty { background: #d8d2c9; }
 
     .toggle {
       display: inline-flex;
@@ -1160,6 +1189,7 @@
                   <th>24h 失败</th>
                   <th>连续失败</th>
                   <th>冷却至</th>
+                  <th>冷却原因</th>
                 </tr>
               </thead>
               <tbody id="overviewRows"></tbody>
@@ -1193,8 +1223,10 @@
                   <th>上游 Key</th>
                   <th>下游 Key</th>
                   <th>支持模型</th>
+                  <th>近 75 分钟</th>
                   <th>24h 成功率</th>
                   <th>失败</th>
+                  <th>冷却原因</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -1227,9 +1259,15 @@
               <span class="field-label">连续错误上限</span>
               <input id="failureThreshold" type="number" min="1" step="1" autocomplete="off">
             </label>
+            <label>
+              <span class="field-label">渠道冷却时间（分钟）</span>
+              <input id="cooldownMinutes" type="number" min="5" max="180" step="1" autocomplete="off">
+            </label>
             <button type="submit" class="primary" id="saveFailureThreshold">保存设置</button>
             <button type="button" id="resetFailureThreshold">恢复默认</button>
+            <button type="button" id="resetCooldownMinutes">恢复冷却默认</button>
             <div class="field-help" id="failureThresholdHelp">默认值为 3，达到上限后渠道进入冷却。</div>
+            <div class="field-help" id="cooldownMinutesHelp">默认冷却时间为 5 分钟，可设置为 5～180 分钟。</div>
           </form>
         </section>
         <section class="panel">
@@ -1453,7 +1491,7 @@
           "loginButton", "loginNotice", "apiBase", "applyConnection", "refreshAll", "logoutButton", "notice",
           "pageTitle", "pageKicker", "summaryGrid", "overviewRows", "channelSearch", "channelFilters",
           "channelKeyAlert", "channelRows", "modelGrid", "configForm",
-          "failureThreshold", "failureThresholdHelp", "saveFailureThreshold", "resetFailureThreshold", "stateDetails", "navOverviewCount", "navChannelCount",
+          "failureThreshold", "failureThresholdHelp", "saveFailureThreshold", "resetFailureThreshold", "cooldownMinutes", "cooldownMinutesHelp", "resetCooldownMinutes", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
           "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelProxyUrl", "channelInjectWaitTool", "channelModelChecks", "channelModelName", "addChannelModel", "saveChannel",
@@ -1492,6 +1530,7 @@
         }, 150));
         dom.configForm.addEventListener("submit", saveFailureThreshold);
         dom.resetFailureThreshold.addEventListener("click", resetFailureThreshold);
+        dom.resetCooldownMinutes.addEventListener("click", resetCooldownMinutes);
         dom.addChannelModel.addEventListener("click", addChannelModel);
         dom.channelModelName.addEventListener("keydown", (event) => {
           if (event.key !== "Enter") return;
@@ -1826,7 +1865,7 @@
           metricHtml("服务状态", healthText, `数据库：${state.config?.database_path || "-"}`),
           metricHtml("渠道", String(metrics.enabledChannels), `总数 ${metrics.totalChannels}，禁用 ${metrics.disabled}`),
           metricHtml("24h 成功率", `${metrics.successRate}%`, `${metrics.success24h} 成功 / ${metrics.failure24h} 失败`),
-          metricHtml("冷却中", String(metrics.cooldown), `连续失败阈值 ${state.config?.failure_threshold ?? "-"}`)
+          metricHtml("冷却中", String(metrics.cooldown), `阈值 ${state.config?.failure_threshold ?? "-"} 次，冷却 ${state.config?.cooldown_minutes ?? "-"} 分钟`)
         ].join("");
       }
 
@@ -1836,11 +1875,11 @@
 
       function renderOverviewRows() {
         if (!state.authenticated) {
-          dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">需要 Admin Token</td></tr>`;
+          dom.overviewRows.innerHTML = `<tr><td colspan="8" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
         if (!state.channels.length) {
-          dom.overviewRows.innerHTML = `<tr><td colspan="7" class="empty">暂无渠道</td></tr>`;
+          dom.overviewRows.innerHTML = `<tr><td colspan="8" class="empty">暂无渠道</td></tr>`;
           return;
         }
         const animateClass = state.hasAnimated ? "" : " animate-once";
@@ -1853,6 +1892,7 @@
             <td>${escapeHtml(channel.failure_24h ?? 0)}</td>
             <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
             <td>${escapeHtml(formatDate(channel.cooldown_until))}</td>
+            <td>${escapeHtml(channel.cooldown_reason || "-")}</td>
           </tr>
         `).join("");
         state.hasAnimated = true;
@@ -1878,7 +1918,7 @@
         renderChannelKeyAlert(metrics);
 
         if (!state.authenticated) {
-          dom.channelRows.innerHTML = `<tr><td colspan="11" class="empty">需要 Admin Token</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="13" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
 
@@ -1893,7 +1933,7 @@
         });
 
         if (!rows.length) {
-          dom.channelRows.innerHTML = `<tr><td colspan="11" class="empty">没有匹配渠道</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="13" class="empty">没有匹配渠道</td></tr>`;
           return;
         }
 
@@ -1914,8 +1954,10 @@
               <td>${channel.has_upstream_api_key ? badge("已保存", "info") : `${badge("缺失", "bad")}<div class="muted">不可调用</div>`}</td>
               <td>${channel.has_downstream_api_key ? badge("专属", "info") : badge("全局", "idle")}</td>
               <td>${modelsHtml}</td>
+              <td>${healthGridHtml(channel.health_5m)}</td>
               <td>${badge(`${rate}%`, rate >= 95 ? "ok" : rate > 0 ? "warn" : "idle")}</td>
               <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
+              <td><div class="truncate" title="${escapeHtml(channel.cooldown_reason || "-")}">${escapeHtml(channel.cooldown_reason || "-")}</div></td>
               <td>${escapeHtml(formatDate(channel.updated_at))}</td>
               <td>
                 <div class="row-actions">
@@ -1928,6 +1970,31 @@
             </tr>
           `;
         }).join("");
+      }
+
+      function healthGridHtml(health) {
+        const buckets = Array.isArray(health) ? health.slice(-15) : [];
+        while (buckets.length < 15) {
+          buckets.unshift({ state: "empty", success: 0, failure: 0, total: 0, start_at: null, end_at: null });
+        }
+        return `<div class="health-grid" aria-label="近 75 分钟健康度">${buckets.map((bucket) => {
+          const stateName = ["success", "failure", "mixed", "empty"].includes(bucket.state) ? bucket.state : "empty";
+          const title = healthBucketTitle({ ...bucket, state: stateName });
+          return `<span class="health-bar ${stateName}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>`;
+        }).join("")}</div>`;
+      }
+
+      function healthBucketTitle(bucket) {
+        const stateText = {
+          success: "全部成功",
+          failure: "全部失败",
+          mixed: "部分成功",
+          empty: "无调用"
+        }[bucket.state] || "无调用";
+        const start = formatDate(bucket.start_at);
+        const end = formatDate(bucket.end_at);
+        const range = start === "-" || end === "-" ? "时间段：-" : `时间段：${start} 至 ${end}`;
+        return `${range}\n状态：${stateText}\n成功：${Number(bucket.success || 0)}\n失败：${Number(bucket.failure || 0)}`;
       }
 
       function renderChannelKeyAlert(metrics) {
@@ -1995,7 +2062,11 @@
           ["Failure Threshold", config.failure_threshold],
           ["Failure Threshold Default", config.failure_threshold_default],
           ["Failure Threshold Configured", config.failure_threshold_configured ? "yes" : "no"],
+          ["Cooldown Minutes", config.cooldown_minutes],
+          ["Cooldown Minutes Default", config.cooldown_minutes_default],
+          ["Cooldown Minutes Configured", config.cooldown_minutes_configured ? "yes" : "no"],
           ["Cooldown Seconds", config.cooldown_seconds],
+          ["Config Path", config.config_path],
           ["Model Count", config.model_count],
           ["Database Path", config.database_path],
           ["Admin Token Source", config.admin_token_source],
@@ -2017,13 +2088,20 @@
 
       function renderConfigSettings(config = state.config || {}) {
         const threshold = config.failure_threshold ?? config.failure_threshold_default ?? 3;
+        const cooldownMinutes = config.cooldown_minutes ?? config.cooldown_minutes_default ?? 5;
         if (document.activeElement !== dom.failureThreshold) {
           dom.failureThreshold.value = threshold;
         }
-        const cooldown = config.cooldown_seconds ?? "-";
+        if (document.activeElement !== dom.cooldownMinutes) {
+          dom.cooldownMinutes.value = cooldownMinutes;
+        }
+        const cooldown = config.cooldown_seconds ?? cooldownMinutes * 60;
         dom.failureThresholdHelp.textContent = config.failure_threshold_configured
           ? `当前手动设置为 ${threshold}，达到上限后进入 ${cooldown} 秒冷却。`
           : `当前使用默认值 ${threshold}，达到上限后进入 ${cooldown} 秒冷却。`;
+        dom.cooldownMinutesHelp.textContent = config.cooldown_minutes_configured
+          ? `当前手动设置为 ${cooldownMinutes} 分钟，可调整为 5～180 分钟。`
+          : `当前使用默认值 ${cooldownMinutes} 分钟，可调整为 5～180 分钟。`;
       }
 
       async function handleAction(action, id) {
@@ -2069,16 +2147,24 @@
           showNotice("连续错误上限必须是不小于 1 的整数", "error");
           return;
         }
+        const rawCooldown = dom.cooldownMinutes.value.trim();
+        const cooldownMinutes = rawCooldown ? Number(rawCooldown) : null;
+        if (cooldownMinutes !== null || rawCooldown) {
+          if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 5 || cooldownMinutes > 180) {
+            showNotice("冷却时间必须是 5～180 分钟的整数", "error");
+            return;
+          }
+        }
 
         setBusy(true);
         try {
           state.config = await request("/admin/config", {
             method: "PATCH",
             admin: true,
-            body: { failure_threshold: threshold }
+            body: { failure_threshold: threshold, cooldown_minutes: cooldownMinutes }
           });
           render();
-          showNotice(threshold === null ? "连续错误上限已恢复默认" : "连续错误上限已保存", "success");
+          showNotice("熔断设置已保存", "success");
         } catch (error) {
           showNotice(error.message, "error");
         } finally {
@@ -2100,6 +2186,27 @@
           });
           render();
           showNotice("连续错误上限已恢复默认", "success");
+        } catch (error) {
+          showNotice(error.message, "error");
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function resetCooldownMinutes() {
+        if (state.busy) {
+          showNotice("请求处理中，请稍后再试", "");
+          return;
+        }
+        setBusy(true);
+        try {
+          state.config = await request("/admin/config", {
+            method: "PATCH",
+            admin: true,
+            body: { cooldown_minutes: null }
+          });
+          render();
+          showNotice("渠道冷却时间已恢复默认", "success");
         } catch (error) {
           showNotice(error.message, "error");
         } finally {

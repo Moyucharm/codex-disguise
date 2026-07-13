@@ -116,6 +116,9 @@ http://localhost:8002/management
 - 配置渠道是否为 GPT-5.6 Lite 上游请求注入官方 `wait` 工具。
 - 在渠道配置中添加自定义模型名，自定义模型只会路由到显式选择它的渠道。
 - 设置连续错误上限；留空或恢复默认时使用 `3`，达到上限后渠道进入冷却。
+- 设置渠道冷却时间；默认 `5` 分钟，可调整为 `5～180` 分钟，保存于 `data/config.json`。
+- 查看渠道当前冷却时的上游错误原因；该原因仅保存在进程内存中，用于临时排查。
+- 查看渠道近 75 分钟健康度，以 5 分钟为一格显示成功、失败、混合或无调用；该健康度仅保存在进程内存中。
 - 测试单个渠道可用性。
 - 重置渠道运行状态或网关指纹。
 
@@ -136,7 +139,7 @@ http://localhost:8002/management
 | --- | --- | --- |
 | `GET` | `/admin/session` | 验证管理会话 |
 | `GET` | `/admin/config` | 获取完整管理配置摘要 |
-| `PATCH` | `/admin/config` | 更新管理配置，当前支持 `failure_threshold` |
+| `PATCH` | `/admin/config` | 更新管理配置，支持 `failure_threshold`、`cooldown_minutes` |
 | `GET` | `/admin/channels` | 获取渠道列表 |
 | `POST` | `/admin/channels` | 创建渠道 |
 | `GET` | `/admin/channels/{channel_id}` | 获取渠道详情 |
@@ -161,6 +164,10 @@ http://localhost:8002/management
 - 渠道的 `inject_wait_tool` 只控制是否追加官方 `wait` 工具，默认关闭；如果已有同名 `wait` 工具则不会重复追加。
 - `failure_threshold` 表示渠道进入冷却前允许的连续错误次数，必须是不小于 `1` 的整数。
 - `PATCH /admin/config` 传入 `{"failure_threshold": null}` 可恢复默认值 `3`。
+- `cooldown_minutes` 表示渠道进入冷却后的持续时间，必须为 `5～180` 分钟的整数，默认值为 `5`。
+- `PATCH /admin/config` 传入 `{"cooldown_minutes": null}` 可恢复默认值 `5` 分钟。
+- 全局 Key 不能调用禁用渠道，并会跳过冷却中的渠道；匹配的专属下游 Key 忽略渠道启用状态和冷却状态，仍然调用该渠道。
+- `data/config.json` 示例：`{"cooldown_minutes": 5}`。
 
 ## 渠道代理
 
