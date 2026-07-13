@@ -38,6 +38,20 @@ class CodexRequestShapeTests(unittest.TestCase):
 
         self.assertIs(upstream_body, body)
 
+    def test_codex_wait_tool_matches_official_capture_fingerprint(self):
+        wait = main.CODEX_WAIT_TOOL
+        self.assertEqual(wait["type"], "function")
+        self.assertEqual(wait["name"], "wait")
+        self.assertFalse(wait["strict"])
+        self.assertEqual(wait["parameters"]["required"], ["cell_id"])
+        self.assertFalse(wait["parameters"]["additionalProperties"])
+        self.assertEqual(
+            sorted(wait["parameters"]["properties"]),
+            ["cell_id", "max_tokens", "terminate", "yield_time_ms"],
+        )
+        self.assertEqual(len(wait["description"]), 769)
+        self.assertIn("If the cell has already finished", wait["description"])
+
     def test_lite_upstream_body_uses_codex_responses_lite_shape(self):
         state = gateway_state()
         turn_metadata = main._codex_turn_metadata(state, "turn_123")
@@ -107,6 +121,12 @@ class CodexRequestShapeTests(unittest.TestCase):
             ["existing_tool", "client_tool", "wait"],
         )
         self.assertEqual(shaped["input"][1]["type"], "message")
+        wait_tool = shaped["input"][0]["tools"][2]
+        self.assertEqual(wait_tool, main.CODEX_WAIT_TOOL)
+        self.assertEqual(len(wait_tool["description"]), 769)
+        self.assertIsInstance(shaped["prompt_cache_key"], str)
+        self.assertEqual(len(shaped["prompt_cache_key"]), 36)
+        self.assertEqual(shaped["prompt_cache_key"].count("-"), 4)
 
     def test_lite_wait_injection_does_not_duplicate_existing_wait_tool(self):
         state = gateway_state()
@@ -121,6 +141,46 @@ class CodexRequestShapeTests(unittest.TestCase):
         shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 1}, state, None)
 
         self.assertEqual([tool["name"] for tool in shaped["input"][0]["tools"]], ["wait"])
+
+    def test_lite_generates_uuid_prompt_cache_key_when_missing(self):
+        state = gateway_state()
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ping"}],
+                }
+            ],
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        cache_key = shaped["prompt_cache_key"]
+        self.assertIsInstance(cache_key, str)
+        self.assertEqual(len(cache_key), 36)
+        self.assertEqual(cache_key.count("-"), 4)
+        self.assertNotIn("prompt_cache_key", body)
+
+    def test_lite_blank_prompt_cache_key_is_replaced(self):
+        state = gateway_state()
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": "ping",
+            "prompt_cache_key": "   ",
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        self.assertNotEqual(shaped["prompt_cache_key"].strip(), "")
+        self.assertEqual(len(shaped["prompt_cache_key"]), 36)
+
+    def test_non_lite_model_does_not_generate_prompt_cache_key(self):
+        body = {"model": "gpt-5.5", "input": "ping"}
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 1}, gateway_state(), None)
+        self.assertIs(shaped, body)
+        self.assertNotIn("prompt_cache_key", shaped)
 
     def test_codex_headers_switch_to_lite_shape_only_for_lite_models(self):
         state = gateway_state()
@@ -158,8 +218,96 @@ class CodexRequestShapeTests(unittest.TestCase):
         self.assertEqual(response_json["status"], "completed")
         self.assertEqual(response_json["output_text"], "hello")
 
+    def test_sse_empty_completed_output_is_filled_from_stream_text_events(self):
+        body = b"".join([
+            b"event: response.output_text.delta\n",
+            b'data: {"type":"response.output_text.delta","delta":"Yes, 1 + 2 = 3."}\n\n',
+            b"event: response.output_text.done\n",
+            b'data: {"type":"response.output_text.done","text":"Yes, 1 + 2 = 3."}\n\n',
+            b"event: response.completed\n",
+            b'data: {"type":"response.completed","response":{"id":"resp_empty","object":"response","status":"completed","output":[],"output_text":null,"model":"gpt-5.6-sol"}}\n\n',
+        ])
+
+        response_json = main._response_json_from_sse(body, "gpt-5.6-sol")
+
+        self.assertEqual(response_json["id"], "resp_empty")
+        self.assertEqual(response_json["status"], "completed")
+        self.assertEqual(response_json["output_text"], "Yes, 1 + 2 = 3.")
+        self.assertEqual(
+            response_json["output"],
+            [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Yes, 1 + 2 = 3."}],
+                }
+            ],
+        )
+
+    def test_sse_block_is_terminal_detects_completed_and_done(self):
+        self.assertTrue(main._sse_block_is_terminal('event: response.completed\ndata: {"type":"response.completed"}'))
+        self.assertTrue(main._sse_block_is_terminal('data: {"type":"response.failed","response":{"status":"failed"}}'))
+        self.assertTrue(main._sse_block_is_terminal("data: [DONE]"))
+        self.assertFalse(main._sse_block_is_terminal('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"x"}'))
+
 
 class PostResponsesShapeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_read_sse_until_terminal_stops_before_eof(self):
+        class FakeResponse:
+            def __init__(self, chunks: list[bytes]):
+                self._chunks = chunks
+
+            async def aiter_bytes(self):
+                for chunk in self._chunks:
+                    yield chunk
+
+        prefix = (
+            b"event: response.output_text.delta\n"
+            b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        )
+        completed = (
+            b"event: response.completed\n"
+            b'data: {"type":"response.completed","response":{"id":"resp_early","status":"completed","output":[],"output_text":null}}\n\n'
+        )
+        hang_tail = b": keep-alive after completed\n\n" + (b"x" * 1024)
+        expected = prefix + completed
+        response = FakeResponse([prefix + completed, hang_tail])
+
+        body = await main._read_sse_until_terminal(response)
+
+        self.assertEqual(body, expected)
+        self.assertNotIn(b"keep-alive after completed", body)
+        parsed = main._response_json_from_sse(body, "gpt-5.6-sol")
+        self.assertEqual(parsed["id"], "resp_early")
+        self.assertEqual(parsed["output_text"], "hi")
+
+    async def test_read_sse_until_terminal_truncates_same_chunk_trailer(self):
+        class FakeResponse:
+            def __init__(self, chunks: list[bytes]):
+                self._chunks = chunks
+
+            async def aiter_bytes(self):
+                for chunk in self._chunks:
+                    yield chunk
+
+        completed = (
+            b"event: response.output_text.delta\n"
+            b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+            b"event: response.completed\n"
+            b'data: {"type":"response.completed","response":{"id":"resp_same","status":"completed","output":[],"output_text":null}}\n\n'
+        )
+        hang_tail = b": keep-alive after completed\n\n" + (b"noise" * 64)
+        response = FakeResponse([completed + hang_tail])
+
+        body = await main._read_sse_until_terminal(response)
+
+        self.assertEqual(body, completed)
+        self.assertNotIn(b"keep-alive after completed", body)
+        self.assertNotIn(b"noise", body)
+        parsed = main._response_json_from_sse(body, "gpt-5.6-sol")
+        self.assertEqual(parsed["id"], "resp_same")
+        self.assertEqual(parsed["output_text"], "hi")
+
     async def test_post_responses_keeps_non_streaming_lite_downstream_response_as_json(self):
         state = gateway_state()
         captured: dict[str, object] = {}

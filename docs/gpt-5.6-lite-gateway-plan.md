@@ -14,9 +14,9 @@
 - Channel test 固定使用 `{"effort":"medium","context":"all_turns"}`。
 - 不再使用旧的 `{"effort":"medium","summary":"auto","context":"all_turns"}`，避免引入非 capture 形态字段。
 - 不覆盖下游传入的工具列表；除 Lite 协议要求移除顶层 `tools` 外，语义上必须转移/追加到 `additional_tools`，不可丢弃。
-- 官方 exact `wait` 工具注入是渠道维度选项，默认关闭。
+- 官方 exact `wait` 工具注入是渠道维度选项，默认关闭；注入 schema 必须匹配 Codex CLI 0.144.2 capture。
 - 不做 AnyRouter 渠道判断、不做 AnyRouter 特例适配。
-- `prompt_cache_key` 暂只透传下游已有值，不主动生成。
+- `prompt_cache_key`：下游有值时透传；Lite 上游请求缺失或为空时自动生成 UUID。
 - 更新 Codex UA/version 到当前探测版本 `0.144.2`。
 
 ## 主要设计
@@ -125,9 +125,10 @@ DB `channels` 表新增字段：
 - Lite body 包含 `text={"verbosity":"medium"}`。
 - Lite body 有下游 `reasoning` 时透传。
 - Lite body 无下游 `reasoning` 时补 `{"effort":"medium","context":"all_turns"}`。
+- Lite body 有下游 `prompt_cache_key` 时透传；缺失或空值时生成 UUID。
 - Channel test 对 Lite body 使用 `reasoning={"effort":"medium","context":"all_turns"}`。
 - 下游顶层 `tools` 被追加进 `additional_tools.tools`，不丢弃。
 - `inject_wait_tool=false` 时不注入 `wait`。
-- `inject_wait_tool=true` 时追加官方 exact `wait`。
+- `inject_wait_tool=true` 时追加官方 exact `wait`（description 长度 769，匹配 Codex CLI 0.144.2 capture）。
 - 非流式下游请求不会被强制返回 SSE。
 - 流式下游请求继续 SSE 透传。

@@ -29,7 +29,7 @@ MANAGEMENT_HTML_PATH = APP_DIR / "management.html"
 
 DEFAULT_UPSTREAM_URL = "https://new.sharedchat.cc/codex/v1"
 TIMEOUT = httpx.Timeout(300.0, connect=10.0)
-CHANNEL_TEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+CHANNEL_TEST_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
 ORIGINATOR = "codex_cli_rs"
 LITE_ORIGINATOR = "codex_exec"
@@ -76,6 +76,7 @@ REQUIRED_RESPONSES_INCLUDE = "reasoning.encrypted_content"
 LITE_DEFAULT_REASONING = {"effort": "medium", "context": "all_turns"}
 LITE_TEXT = {"verbosity": "medium"}
 
+# Exact Codex CLI 0.144.2 wait schema from capture fingerprint.
 CODEX_WAIT_TOOL = {
     "type": "function",
     "name": "wait",
@@ -86,7 +87,11 @@ CODEX_WAIT_TOOL = {
         "- `yield_time_ms` controls how long to wait for more output before yielding again. "
         "Defaults to 10000 ms.\n"
         "- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.\n"
-        "- `terminate: true` stops the running cell; false or omitted waits for output."
+        "- `terminate: true` stops the running cell; false or omitted waits for output.\n"
+        "- `wait` returns only the new output since the last yield, or the final completion or "
+        "termination result for that cell.\n"
+        "- If the cell is still running, `wait` may yield again with the same `cell_id`.\n"
+        "- If the cell has already finished, `wait` returns the completed result and closes the cell."
     ),
     "strict": False,
     "parameters": {
@@ -96,10 +101,6 @@ CODEX_WAIT_TOOL = {
                 "type": "string",
                 "description": "Identifier of the running exec cell.",
             },
-            "yield_time_ms": {
-                "type": "number",
-                "description": "Wait before yielding more output. Defaults to 10000 ms.",
-            },
             "max_tokens": {
                 "type": "number",
                 "description": "Output token budget for this wait call. Defaults to 10000 tokens.",
@@ -107,6 +108,10 @@ CODEX_WAIT_TOOL = {
             "terminate": {
                 "type": "boolean",
                 "description": "True stops the running exec cell; false or omitted waits for output.",
+            },
+            "yield_time_ms": {
+                "type": "number",
+                "description": "Wait before yielding more output. Defaults to 10000 ms.",
             },
         },
         "required": ["cell_id"],
@@ -1031,6 +1036,10 @@ def _body_for_upstream_channel(
     if upstream_body.get("reasoning") is None:
         upstream_body["reasoning"] = copy.deepcopy(LITE_DEFAULT_REASONING)
 
+    cache_key = upstream_body.get("prompt_cache_key")
+    if not isinstance(cache_key, str) or not cache_key.strip():
+        upstream_body["prompt_cache_key"] = str(uuid.uuid4())
+
     metadata = upstream_body.get("client_metadata")
     if metadata is None:
         metadata = {}
@@ -1937,6 +1946,13 @@ async def _raw_sse_bytes(result: StreamResult) -> AsyncIterator[bytes]:
         await _close_upstream_stream(result.stream_context)
 
 
+SSE_TERMINAL_EVENTS = frozenset({
+    "response.completed",
+    "response.incomplete",
+    "response.failed",
+})
+
+
 def _sse_events_from_bytes(body: bytes) -> list[tuple[str | None, str]]:
     text = body.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     events: list[tuple[str | None, str]] = []
@@ -1957,6 +1973,105 @@ def _sse_events_from_bytes(body: bytes) -> list[tuple[str | None, str]]:
         if data_lines:
             events.append((event_type, "\n".join(data_lines)))
     return events
+
+
+def _sse_block_is_terminal(block: str) -> bool:
+    event_type: str | None = None
+    data_lines: list[str] = []
+    for line in block.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_type = line.removeprefix("event:").strip()
+            continue
+        if line.startswith("data:"):
+            data = line.removeprefix("data:")
+            if data.startswith(" "):
+                data = data[1:]
+            data_lines.append(data)
+
+    if not data_lines:
+        return event_type in SSE_TERMINAL_EVENTS
+
+    data_text = "\n".join(data_lines)
+    if data_text == "[DONE]":
+        return True
+    if event_type in SSE_TERMINAL_EVENTS:
+        return True
+    try:
+        payload = json.loads(data_text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    event_name = event_type or payload.get("type")
+    return event_name in SSE_TERMINAL_EVENTS
+
+
+def _next_sse_block_boundary(raw: bytes, start: int) -> tuple[int, int] | None:
+    """Return (block_end, separator_len) for the next complete SSE block, or None."""
+    lf_pos = raw.find(b"\n\n", start)
+    crlf_pos = raw.find(b"\r\n\r\n", start)
+    if lf_pos == -1 and crlf_pos == -1:
+        return None
+    if crlf_pos != -1 and (lf_pos == -1 or crlf_pos < lf_pos):
+        return crlf_pos, 4
+    return lf_pos, 2
+
+
+async def _read_sse_until_terminal(response: httpx.Response) -> bytes:
+    """Read SSE bytes until a terminal Responses event, then stop.
+
+    Some upstreams keep the HTTP stream open after response.completed.
+    Waiting for EOF via aread() can hang until read timeout even though
+    the logical response is already finished.
+
+    Returns only bytes through the terminal block boundary so same-chunk
+    trailers after completed are discarded.
+    """
+    raw = bytearray()
+    scan_from = 0
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        raw.extend(chunk)
+        while True:
+            boundary = _next_sse_block_boundary(raw, scan_from)
+            if boundary is None:
+                break
+            block_end, separator_len = boundary
+            block = raw[scan_from:block_end].decode("utf-8", errors="replace")
+            consumed_end = block_end + separator_len
+            if _sse_block_is_terminal(block):
+                return bytes(raw[:consumed_end])
+            scan_from = consumed_end
+    return bytes(raw)
+
+
+def _assistant_message_output(output_text: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": output_text}],
+        }
+    ]
+
+
+def _response_has_visible_text(response: dict[str, Any] | None) -> bool:
+    if not isinstance(response, dict):
+        return False
+    if _content_value_has_text(response.get("output_text")):
+        return True
+    return _content_value_has_text(response.get("output"))
+
+
+def _fill_response_output_text(response: dict[str, Any], output_text: str) -> dict[str, Any]:
+    filled = dict(response)
+    filled["output_text"] = output_text
+    if not _content_value_has_text(filled.get("output")):
+        filled["output"] = _assistant_message_output(output_text)
+    return filled
 
 
 def _response_json_from_sse(body: bytes, model: Any) -> dict[str, Any] | None:
@@ -1997,13 +2112,23 @@ def _response_json_from_sse(body: bytes, model: Any) -> dict[str, Any] | None:
         if event_name == "response.output_text.done" and isinstance(text, str):
             done_output_text = text
 
+    stream_output_text = done_output_text if done_output_text is not None else "".join(output_text_parts)
+
     if completed_response is not None:
+        if _response_has_visible_text(completed_response):
+            return completed_response
+        if stream_output_text:
+            return _fill_response_output_text(completed_response, stream_output_text)
         return completed_response
+
     if latest_response is not None:
+        if _response_has_visible_text(latest_response):
+            return latest_response
+        if stream_output_text:
+            return _fill_response_output_text(latest_response, stream_output_text)
         return latest_response
 
-    output_text = done_output_text if done_output_text is not None else "".join(output_text_parts)
-    if not output_text:
+    if not stream_output_text:
         return None
     return {
         "id": response_id or _new_prefixed_id("resp"),
@@ -2011,21 +2136,22 @@ def _response_json_from_sse(body: bytes, model: Any) -> dict[str, Any] | None:
         "created_at": int(_now_ts()),
         "status": "completed",
         "model": model,
-        "output": [
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": output_text}],
-            }
-        ],
-        "output_text": output_text,
+        "output": _assistant_message_output(stream_output_text),
+        "output_text": stream_output_text,
     }
 
 
 async def _json_response_from_stream_result(result: StreamResult, model: Any) -> Response:
     success = False
     try:
-        body = await result.response.aread()
+        content_type = result.response.headers.get("content-type", "")
+        if (
+            not _status_is_success(result.response.status_code)
+            or "application/json" in content_type.lower()
+        ):
+            body = await result.response.aread()
+        else:
+            body = await _read_sse_until_terminal(result.response)
         success = True
     except Exception as exc:
         latency_ms = int((time.perf_counter() - result.started_at) * 1000)
@@ -2412,47 +2538,55 @@ async def test_channel(request: Request, channel_id: str):
         state = _get_gateway_state()
         turn_metadata = _codex_turn_metadata(state, _new_prefixed_id("turn"))
         headers = _codex_headers(request, state, channel, model, turn_metadata)
-        test_body = {"model": model, "input": "ping", "max_output_tokens": 1024}
+        test_body = {"model": model, "input": "1 + 2 equals 3, right?", "max_output_tokens": 4096}
         test_body = _ensure_input_array(test_body)
         test_body = _ensure_client_metadata(request, test_body, state)
         test_body = _ensure_responses_include(test_body)
         test_body = _ensure_codex_request_shape(test_body, state)
-        response = await _client_for_channel(request, channel).post(
+        upstream_body = _body_for_upstream_channel(test_body, channel, state, turn_metadata)
+        upstream_body["stream"] = True
+
+        async with _client_for_channel(request, channel).stream(
+            "POST",
             _upstream_responses_url(channel),
             headers=headers,
-            json=_body_for_upstream_channel(test_body, channel, state, turn_metadata),
+            json=upstream_body,
             timeout=CHANNEL_TEST_TIMEOUT,
-        )
-        result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
-        result["status_code"] = response.status_code
-        if not _status_is_success(response.status_code):
-            message = response.text.strip() or f"上游返回 HTTP {response.status_code}"
-            result["message"] = message[:500]
-            return result
-        if not response.content:
-            result["message"] = "上游返回空响应"
-            return result
-        content_type = response.headers.get("content-type", "")
-        if "text/event-stream" in content_type.lower():
-            data = _response_json_from_sse(response.content, model)
-            if data is None:
-                result["message"] = "上游返回无效 SSE 响应"
+        ) as response:
+            content_type = response.headers.get("content-type", "")
+            if not _status_is_success(response.status_code) or "application/json" in content_type.lower():
+                content = await response.aread()
+            else:
+                content = await _read_sse_until_terminal(response)
+            result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
+            result["status_code"] = response.status_code
+            if not _status_is_success(response.status_code):
+                message = content.decode("utf-8", errors="replace").strip() or f"上游返回 HTTP {response.status_code}"
+                result["message"] = message[:500]
                 return result
-        else:
-            try:
-                data = response.json()
-            except json.JSONDecodeError:
-                result["message"] = "上游返回非 JSON 响应"
+            if not content:
+                result["message"] = "上游返回空响应"
                 return result
-        if not _test_response_has_content(data):
-            result["message"] = "上游返回空内容"
+            if "text/event-stream" in content_type.lower() or content.lstrip().startswith((b"event:", b"data:")):
+                data = _response_json_from_sse(content, model)
+                if data is None:
+                    result["message"] = "上游返回无效 SSE 响应"
+                    return result
+            else:
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError:
+                    result["message"] = "上游返回非 JSON 响应"
+                    return result
+            if not _test_response_has_content(data):
+                result["message"] = "上游返回空内容"
+                return result
+            result["success"] = True
+            result["message"] = "测试成功"
             return result
-        result["success"] = True
-        result["message"] = "测试成功"
-        return result
     except httpx.TimeoutException:
         result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
-        result["message"] = "测试超时（60 秒）"
+        result["message"] = "测试超时（120 秒）"
         return result
     except httpx.RequestError as exc:
         result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)

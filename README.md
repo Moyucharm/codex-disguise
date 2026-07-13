@@ -160,8 +160,9 @@ http://localhost:8002/management
 - 渠道必须显式选择至少一个支持模型，`supported_models` 不再使用 `null` 表示“支持全部模型”。
 - 自定义模型只会路由到显式声明该模型的渠道；从所有渠道移除某个自定义模型后，该模型会从 `/v1/models` 消失。
 - `gpt-5.6-*` 模型会自动启用 Codex Responses Lite 上游转换，不需要按渠道选择，也不会影响 `gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`、`gpt-5.2` 等非 Lite 模型。
-- Lite 转换会将下游顶层 `tools` 转移到 `additional_tools.tools`，不会主动生成 `prompt_cache_key`，也不会设置 `service_tier`。
-- 渠道的 `inject_wait_tool` 只控制是否追加官方 `wait` 工具，默认关闭；如果已有同名 `wait` 工具则不会重复追加。
+- Lite 转换会将下游顶层 `tools` 转移到 `additional_tools.tools`，不会设置 `service_tier`。
+- Lite 上游请求若缺少 `prompt_cache_key`，网关会自动生成 UUID；下游已传入的值会原样透传。
+- 渠道的 `inject_wait_tool` 只控制是否追加官方 exact `wait` 工具（Codex CLI 0.144.2 capture schema），默认关闭；如果已有同名 `wait` 工具则不会重复追加。
 - `failure_threshold` 表示渠道进入冷却前允许的连续错误次数，必须是不小于 `1` 的整数。
 - `PATCH /admin/config` 传入 `{"failure_threshold": null}` 可恢复默认值 `3`。
 - `cooldown_minutes` 表示渠道进入冷却后的持续时间，必须为 `5～180` 分钟的整数，默认值为 `5`。

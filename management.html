@@ -1252,7 +1252,7 @@
                   <th>状态</th>
                   <th>24h 成功率</th>
                   <th>失败</th>
-                  <th>上游报错</th>
+                  <th>冷却原因</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -1397,7 +1397,7 @@
           <label class="wide">
             <span class="field-label">测试模型</span>
             <div class="chip-group" id="testModel" role="radiogroup"></div>
-            <div class="field-help">默认使用 gpt-5.4。测试超时 60 秒，空响应或空内容会判定为失败。</div>
+            <div class="field-help">默认使用 gpt-5.4。测试超时 120 秒，上游强制流式；空响应或空内容会判定为失败。</div>
           </label>
         </div>
         <div class="test-result" id="testResult"></div>
@@ -2391,13 +2391,13 @@
           return;
         }
         setBusy(true);
-        state.testResult = { pending: true, message: "正在测试，最多等待 60 秒" };
+        state.testResult = { pending: true, message: "正在测试，最多等待 120 秒" };
         renderTestResult();
         try {
           const result = await request(`/admin/channels/${encodeURIComponent(state.testingId)}/test`, {
             method: "POST",
             admin: true,
-            timeoutMs: 70000,
+            timeoutMs: 130000,
             body: { model }
           });
           state.testResult = result;

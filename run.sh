@@ -1,3 +1,3 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8002 --log-level info
+.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8002 --log-level info --reload
