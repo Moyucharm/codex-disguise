@@ -347,15 +347,20 @@
 
     .notice {
       display: none;
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 1000;
       align-items: center;
-      justify-content: space-between;
       gap: 12px;
-      margin-bottom: 16px;
-      padding: 10px 12px;
+      max-width: min(420px, calc(100vw - 40px));
+      padding: 12px 16px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--surface);
       color: var(--muted);
+      box-shadow: 0 10px 30px rgba(40, 32, 24, 0.12);
+      pointer-events: none;
     }
 
     .notice.show { display: flex; animation: noticeIn var(--duration-normal) var(--ease-out) both; }
@@ -383,7 +388,7 @@
     }
 
     @keyframes noticeIn {
-      from { opacity: 0; transform: translateY(-8px); }
+      from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
@@ -484,13 +489,19 @@
 
     .inline-form {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) auto auto;
-      gap: 10px;
+      grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+      gap: 12px 14px;
       align-items: end;
     }
 
-    .inline-form label { min-width: 0; }
-    .inline-form .field-help { grid-column: 1 / -1; }
+    .inline-form label { min-width: 0; display: grid; gap: 6px; }
+    .inline-form .form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .inline-form .field-help { grid-column: 1 / -1; margin: 0; }
 
     .toolbar {
       display: grid;
@@ -557,26 +568,38 @@
     }
 
     .channel-table {
-      min-width: 0;
+      min-width: 980px;
       table-layout: fixed;
     }
 
-    .channel-table th:nth-child(1), .channel-table td:nth-child(1) { width: 16%; }
-    .channel-table th:nth-child(2), .channel-table td:nth-child(2) { width: 20%; }
-    .channel-table th:nth-child(3), .channel-table td:nth-child(3) { width: 62px; }
-    .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 62px; }
-    .channel-table th:nth-child(5), .channel-table td:nth-child(5) { width: 82px; }
-    .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 82px; }
-    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 110px; }
-    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 134px; }
-    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 86px; }
-    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 52px; }
-    .channel-table th:nth-child(11), .channel-table td:nth-child(11) { width: 90px; }
-    .channel-table th:nth-child(12), .channel-table td:nth-child(12) { width: 82px; }
-    .channel-table th:nth-child(13), .channel-table td:nth-child(13) { width: 194px; }
+    .channel-table th:nth-child(1), .channel-table td:nth-child(1) { width: 140px; }
+    .channel-table th:nth-child(2), .channel-table td:nth-child(2) { width: 56px; }
+    .channel-table th:nth-child(3), .channel-table td:nth-child(3) { width: 56px; }
+    .channel-table th:nth-child(4), .channel-table td:nth-child(4) { width: 72px; }
+    .channel-table th:nth-child(5), .channel-table td:nth-child(5) {
+      width: 112px;
+      min-width: 112px;
+      max-width: 112px;
+    }
+    .channel-table th:nth-child(6), .channel-table td:nth-child(6) { width: 88px; }
+    .channel-table th:nth-child(7), .channel-table td:nth-child(7) { width: 48px; }
+    .channel-table th:nth-child(8), .channel-table td:nth-child(8) { width: 100px; }
+    .channel-table th:nth-child(9), .channel-table td:nth-child(9) { width: 88px; }
+    .channel-table th:nth-child(10), .channel-table td:nth-child(10) { width: 220px; }
+
+    .channel-table td:nth-child(5) {
+      overflow: hidden;
+      vertical-align: middle;
+    }
+
+    .channel-table .health-grid {
+      display: block;
+      width: 88px;
+      height: 1em;
+    }
 
     th, td {
-      padding: 11px 12px;
+      padding: 8px 12px;
       border-bottom: 1px solid #eee9e3;
       text-align: left;
       vertical-align: middle;
@@ -622,14 +645,6 @@
     .muted { color: var(--muted); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
 
-    .compact-id {
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: 12px;
-    }
-
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -653,31 +668,43 @@
     .idle { color: var(--muted); background: #efebe6; }
 
     .health-grid {
-      display: grid;
-      grid-template-columns: repeat(15, 1fr);
-      gap: 3px;
-      width: 110px;
-      align-items: end;
+      display: block;
     }
 
-    .health-bar {
-      width: 100%;
-      height: 28px;
-      border-radius: 999px;
-      background: #d9d3ca;
-      transition: transform var(--duration-fast) var(--ease-out),
-                  filter var(--duration-fast) var(--ease-out);
+    .health-tooltip {
+      position: fixed;
+      z-index: 80;
+      min-width: 148px;
+      max-width: 240px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(36, 33, 31, 0.94);
+      color: #fff;
+      font-size: 12px;
+      line-height: 1.45;
+      box-shadow: 0 10px 28px rgba(36, 33, 31, 0.22);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity var(--duration-fast) var(--ease-out),
+                  transform var(--duration-fast) var(--ease-out);
     }
 
-    .health-bar:hover {
-      transform: translateY(-2px);
-      filter: brightness(0.96);
+    .health-tooltip.show {
+      opacity: 1;
+      transform: translateY(0);
     }
 
-    .health-bar.success { background: #19bf68; }
-    .health-bar.failure { background: #cf3f3a; }
-    .health-bar.mixed { background: #d99a22; }
-    .health-bar.empty { background: #d8d2c9; }
+    .health-tooltip-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      white-space: nowrap;
+    }
+
+    .health-tooltip-row + .health-tooltip-row { margin-top: 4px; }
+    .health-tooltip-label { color: rgba(255, 255, 255, 0.72); }
+    .health-tooltip-value { font-weight: 600; font-variant-numeric: tabular-nums; }
 
     .toggle {
       display: inline-flex;
@@ -715,16 +742,16 @@
     .row-actions {
       display: flex;
       align-items: center;
-      gap: 5px;
+      flex-wrap: wrap;
+      gap: 6px;
       justify-content: flex-start;
-      white-space: nowrap;
     }
 
     .row-actions button {
       min-width: 0;
       padding: 0 10px;
-      min-height: 30px;
-      font-size: 13px;
+      min-height: 26px;
+      font-size: 12px;
     }
 
     .test-result {
@@ -1063,6 +1090,8 @@
       .connection { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
       .inline-form { grid-template-columns: 1fr; }
+      .inline-form .form-actions { width: 100%; }
+      .inline-form .form-actions button { flex: 1 1 auto; }
       .channel-model-add { grid-template-columns: 1fr; }
       .filter-row { justify-content: flex-start; }
       .summary-grid { grid-template-columns: 1fr; }
@@ -1217,16 +1246,13 @@
               <thead>
                 <tr>
                   <th>名称</th>
-                  <th>上游地址</th>
                   <th>启用</th>
                   <th>优先级</th>
-                  <th>上游 Key</th>
                   <th>下游 Key</th>
-                  <th>支持模型</th>
-                  <th>近 75 分钟</th>
+                  <th>状态</th>
                   <th>24h 成功率</th>
                   <th>失败</th>
-                  <th>冷却原因</th>
+                  <th>上游报错</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -1263,11 +1289,10 @@
               <span class="field-label">渠道冷却时间（分钟）</span>
               <input id="cooldownMinutes" type="number" min="5" max="180" step="1" autocomplete="off">
             </label>
-            <button type="submit" class="primary" id="saveFailureThreshold">保存设置</button>
-            <button type="button" id="resetFailureThreshold">恢复默认</button>
-            <button type="button" id="resetCooldownMinutes">恢复冷却默认</button>
-            <div class="field-help" id="failureThresholdHelp">默认值为 3，达到上限后渠道进入冷却。</div>
-            <div class="field-help" id="cooldownMinutesHelp">默认冷却时间为 5 分钟，可设置为 5～180 分钟。</div>
+            <div class="form-actions">
+              <button type="submit" class="primary" id="saveFailureThreshold">保存设置</button>
+              <button type="button" id="resetFailureThreshold">恢复默认</button>
+            </div>
           </form>
         </section>
         <section class="panel">
@@ -1491,7 +1516,7 @@
           "loginButton", "loginNotice", "apiBase", "applyConnection", "refreshAll", "logoutButton", "notice",
           "pageTitle", "pageKicker", "summaryGrid", "overviewRows", "channelSearch", "channelFilters",
           "channelKeyAlert", "channelRows", "modelGrid", "configForm",
-          "failureThreshold", "failureThresholdHelp", "saveFailureThreshold", "resetFailureThreshold", "cooldownMinutes", "cooldownMinutesHelp", "resetCooldownMinutes", "stateDetails", "navOverviewCount", "navChannelCount",
+          "failureThreshold", "saveFailureThreshold", "resetFailureThreshold", "cooldownMinutes", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
           "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelProxyUrl", "channelInjectWaitTool", "channelModelChecks", "channelModelName", "addChannelModel", "saveChannel",
@@ -1520,6 +1545,21 @@
           }
         });
 
+        document.addEventListener("pointerover", (event) => {
+          const bar = event.target.closest("[data-health-tip]");
+          if (!bar) return;
+          showHealthTooltip(bar);
+        });
+        document.addEventListener("pointerout", (event) => {
+          const bar = event.target.closest("[data-health-tip]");
+          if (!bar) return;
+          const next = event.relatedTarget;
+          if (next && bar.contains(next)) return;
+          hideHealthTooltip();
+        });
+        document.addEventListener("scroll", hideHealthTooltip, true);
+        window.addEventListener("resize", hideHealthTooltip);
+
         dom.loginForm.addEventListener("submit", login);
         dom.applyConnection.addEventListener("click", applyConnection);
         dom.refreshAll.addEventListener("click", refreshAll);
@@ -1529,8 +1569,7 @@
           renderChannels();
         }, 150));
         dom.configForm.addEventListener("submit", saveFailureThreshold);
-        dom.resetFailureThreshold.addEventListener("click", resetFailureThreshold);
-        dom.resetCooldownMinutes.addEventListener("click", resetCooldownMinutes);
+        dom.resetFailureThreshold.addEventListener("click", resetConfigDefaults);
         dom.addChannelModel.addEventListener("click", addChannelModel);
         dom.channelModelName.addEventListener("keydown", (event) => {
           if (event.key !== "Enter") return;
@@ -1815,10 +1854,9 @@
       function showNotice(message, type) {
         dom.notice.textContent = message;
         dom.notice.className = `notice show ${type || ""}`.trim();
-        if (type === "success") {
-          window.clearTimeout(showNotice.timer);
-          showNotice.timer = window.setTimeout(() => dom.notice.classList.remove("show"), 2400);
-        }
+        window.clearTimeout(showNotice.timer);
+        const hideAfter = type === "error" ? 3500 : 2400;
+        showNotice.timer = window.setTimeout(() => dom.notice.classList.remove("show"), hideAfter);
       }
 
       function showLoginNotice(message, type) {
@@ -1850,9 +1888,8 @@
         const successRate = total24h ? Math.round((success24h / total24h) * 1000) / 10 : 0;
         const cooldown = channels.filter(isCoolingDown).length;
         const disabled = channels.filter((item) => !item.enabled).length;
-        const keyed = channels.filter((item) => item.has_upstream_api_key).length;
         const missingUpstreamKey = channels.filter((item) => item.enabled && !item.has_upstream_api_key).length;
-        return { totalChannels, enabledChannels, total24h, success24h, failure24h, successRate, cooldown, disabled, keyed, missingUpstreamKey };
+        return { totalChannels, enabledChannels, total24h, success24h, failure24h, successRate, cooldown, disabled, missingUpstreamKey };
       }
 
       function sum(items, key) {
@@ -1903,8 +1940,7 @@
           ["all", "全部", state.channels.length],
           ["enabled", "启用", state.channels.filter((item) => item.enabled).length],
           ["disabled", "禁用", metrics.disabled],
-          ["cooldown", "冷却", metrics.cooldown],
-          ["keyed", "有上游 Key", metrics.keyed]
+          ["cooldown", "冷却", metrics.cooldown]
         ];
         dom.channelFilters.innerHTML = filters.map(([key, label, count]) => `
           <button type="button" class="chip ${state.filter === key ? "active" : ""}" data-filter="${key}">
@@ -1914,11 +1950,12 @@
       }
 
       function renderChannels(metrics = buildMetrics()) {
+        hideHealthTooltip();
         renderFilters(metrics);
         renderChannelKeyAlert(metrics);
 
         if (!state.authenticated) {
-          dom.channelRows.innerHTML = `<tr><td colspan="13" class="empty">需要 Admin Token</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">需要 Admin Token</td></tr>`;
           return;
         }
 
@@ -1928,12 +1965,11 @@
           if (state.filter === "enabled") return channel.enabled;
           if (state.filter === "disabled") return !channel.enabled;
           if (state.filter === "cooldown") return isCoolingDown(channel);
-          if (state.filter === "keyed") return channel.has_upstream_api_key;
           return true;
         });
 
         if (!rows.length) {
-          dom.channelRows.innerHTML = `<tr><td colspan="13" class="empty">没有匹配渠道</td></tr>`;
+          dom.channelRows.innerHTML = `<tr><td colspan="10" class="empty">没有匹配渠道</td></tr>`;
           return;
         }
 
@@ -1941,19 +1977,12 @@
         dom.channelRows.innerHTML = rows.map((channel, index) => {
           const id = escapeHtml(channel.id);
           const rate = Number(channel.success_rate_24h || 0);
-          const channelModels = Array.isArray(channel.supported_models) ? channel.supported_models : [];
-          const modelsHtml = channelModels.length
-            ? channelModels.map((m) => `<span class="badge idle">${escapeHtml(m)}</span>`).join(" ")
-            : badge("无可用模型", "bad");
           return `
             <tr class="${animateClass}" style="animation-delay: ${Math.min(index * 40, 400)}ms">
-              <td><strong>${escapeHtml(channel.name)}</strong><div class="muted mono compact-id" title="${id}">${id}</div></td>
-              <td><div class="truncate" title="${escapeHtml(channel.upstream_url)}">${escapeHtml(channel.upstream_url)}</div></td>
+              <td><strong>${escapeHtml(channel.name)}</strong></td>
               <td><button type="button" class="toggle ${channel.enabled ? "on" : ""}" data-action="toggle-channel" data-id="${id}" aria-label="${channel.enabled ? "禁用" : "启用"}"></button></td>
               <td>${escapeHtml(channel.priority)}</td>
-              <td>${channel.has_upstream_api_key ? badge("已保存", "info") : `${badge("缺失", "bad")}<div class="muted">不可调用</div>`}</td>
               <td>${channel.has_downstream_api_key ? badge("专属", "info") : badge("全局", "idle")}</td>
-              <td>${modelsHtml}</td>
               <td>${healthGridHtml(channel.health_5m)}</td>
               <td>${badge(`${rate}%`, rate >= 95 ? "ok" : rate > 0 ? "warn" : "idle")}</td>
               <td>${escapeHtml(channel.consecutive_failures ?? 0)}</td>
@@ -1977,24 +2006,80 @@
         while (buckets.length < 15) {
           buckets.unshift({ state: "empty", success: 0, failure: 0, total: 0, start_at: null, end_at: null });
         }
-        return `<div class="health-grid" aria-label="近 75 分钟健康度">${buckets.map((bucket) => {
-          const stateName = ["success", "failure", "mixed", "empty"].includes(bucket.state) ? bucket.state : "empty";
-          const title = healthBucketTitle({ ...bucket, state: stateName });
-          return `<span class="health-bar ${stateName}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>`;
-        }).join("")}</div>`;
+        const N = 15, W = 4, G = 2;
+        const TOTAL = N * W + (N - 1) * G;
+        const colorMap = {
+          success: "#19bf68",
+          failure: "#cf3f3a",
+          mixed:   "#d99a22",
+          empty:   "#e8e3db"
+        };
+        const bars = buckets.map((bucket, i) => {
+          const state = ["success","failure","mixed","empty"].includes(bucket.state) ? bucket.state : "empty";
+          const tip = healthBucketTooltip({ ...bucket, state });
+          const fill = colorMap[state];
+          const opacity = state === "empty" ? 0.55 : 1;
+          const x = i * (W + G);
+          const safeTip = escapeHtml(tip);
+          const safeTitle = escapeHtml(tip.replace(/\|/g, " · "));
+          return `<rect x="${x}" y="0" width="${W}" height="100" rx="1.5" fill="${fill}" opacity="${opacity}" data-health-tip="${safeTip}"><title>${safeTitle}</title></rect>`;
+        }).join("");
+        return `<svg class="health-grid" width="${TOTAL}" height="14" viewBox="0 0 ${TOTAL} 100" preserveAspectRatio="none" aria-label="状态健康度">${bars}</svg>`;
       }
 
-      function healthBucketTitle(bucket) {
-        const stateText = {
-          success: "全部成功",
-          failure: "全部失败",
-          mixed: "部分成功",
-          empty: "无调用"
-        }[bucket.state] || "无调用";
-        const start = formatDate(bucket.start_at);
-        const end = formatDate(bucket.end_at);
-        const range = start === "-" || end === "-" ? "时间段：-" : `时间段：${start} 至 ${end}`;
-        return `${range}\n状态：${stateText}\n成功：${Number(bucket.success || 0)}\n失败：${Number(bucket.failure || 0)}`;
+      function healthBucketTooltip(bucket) {
+        const success = Number(bucket.success || 0);
+        const failure = Number(bucket.failure || 0);
+        const total = Number(bucket.total || success + failure);
+        const probeTime = formatDate(bucket.end_at || bucket.start_at);
+        const rateText = total > 0 ? `${success}/${total}` : "无调用";
+        return `探测时间: ${probeTime}|成功率: ${rateText}`;
+      }
+
+      function ensureHealthTooltip() {
+        if (dom.healthTooltip) return dom.healthTooltip;
+        const tip = document.createElement("div");
+        tip.className = "health-tooltip";
+        tip.setAttribute("role", "tooltip");
+        document.body.appendChild(tip);
+        dom.healthTooltip = tip;
+        return tip;
+      }
+
+      function hideHealthTooltip() {
+        if (!dom.healthTooltip) return;
+        dom.healthTooltip.classList.remove("show");
+        dom.healthTooltip.innerHTML = "";
+      }
+
+      function showHealthTooltip(target) {
+        const raw = target.getAttribute("data-health-tip") || "";
+        if (!raw) return;
+        const tip = ensureHealthTooltip();
+        const lines = raw.split("|").filter(Boolean);
+        tip.innerHTML = lines.map((line) => {
+          const idx = line.indexOf(":");
+          if (idx === -1) return `<div class="health-tooltip-row"><span class="health-tooltip-value">${escapeHtml(line)}</span></div>`;
+          const label = line.slice(0, idx).trim();
+          const value = line.slice(idx + 1).trim();
+          return `<div class="health-tooltip-row"><span class="health-tooltip-label">${escapeHtml(label)}</span><span class="health-tooltip-value">${escapeHtml(value)}</span></div>`;
+        }).join("");
+        tip.classList.add("show");
+        positionHealthTooltip(target, tip);
+      }
+
+      function positionHealthTooltip(target, tip) {
+        tip.style.left = "0px";
+        tip.style.top = "0px";
+        const rect = target.getBoundingClientRect();
+        const tipWidth = tip.offsetWidth || 148;
+        const tipHeight = tip.offsetHeight || 56;
+        let left = rect.left + rect.width / 2 - tipWidth / 2;
+        let top = rect.top - tipHeight - 10;
+        if (top < 8) top = rect.bottom + 10;
+        left = Math.max(8, Math.min(left, window.innerWidth - tipWidth - 8));
+        tip.style.left = `${Math.round(left)}px`;
+        tip.style.top = `${Math.round(top)}px`;
       }
 
       function renderChannelKeyAlert(metrics) {
@@ -2095,13 +2180,6 @@
         if (document.activeElement !== dom.cooldownMinutes) {
           dom.cooldownMinutes.value = cooldownMinutes;
         }
-        const cooldown = config.cooldown_seconds ?? cooldownMinutes * 60;
-        dom.failureThresholdHelp.textContent = config.failure_threshold_configured
-          ? `当前手动设置为 ${threshold}，达到上限后进入 ${cooldown} 秒冷却。`
-          : `当前使用默认值 ${threshold}，达到上限后进入 ${cooldown} 秒冷却。`;
-        dom.cooldownMinutesHelp.textContent = config.cooldown_minutes_configured
-          ? `当前手动设置为 ${cooldownMinutes} 分钟，可调整为 5～180 分钟。`
-          : `当前使用默认值 ${cooldownMinutes} 分钟，可调整为 5～180 分钟。`;
       }
 
       async function handleAction(action, id) {
@@ -2172,7 +2250,7 @@
         }
       }
 
-      async function resetFailureThreshold() {
+      async function resetConfigDefaults() {
         if (state.busy) {
           showNotice("请求处理中，请稍后再试", "");
           return;
@@ -2182,31 +2260,10 @@
           state.config = await request("/admin/config", {
             method: "PATCH",
             admin: true,
-            body: { failure_threshold: null }
+            body: { failure_threshold: null, cooldown_minutes: null }
           });
           render();
-          showNotice("连续错误上限已恢复默认", "success");
-        } catch (error) {
-          showNotice(error.message, "error");
-        } finally {
-          setBusy(false);
-        }
-      }
-
-      async function resetCooldownMinutes() {
-        if (state.busy) {
-          showNotice("请求处理中，请稍后再试", "");
-          return;
-        }
-        setBusy(true);
-        try {
-          state.config = await request("/admin/config", {
-            method: "PATCH",
-            admin: true,
-            body: { cooldown_minutes: null }
-          });
-          render();
-          showNotice("渠道冷却时间已恢复默认", "success");
+          showNotice("熔断设置已恢复默认", "success");
         } catch (error) {
           showNotice(error.message, "error");
         } finally {
