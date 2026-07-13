@@ -14,6 +14,8 @@
 - 渠道专属 Key：支持全局下游 Key，也支持渠道级下游 Key。
 - 上游 Key 管理：每个渠道单独配置上游 API Key。
 - 渠道 HTTP 代理：每个渠道可配置 `http://` 或 `https://` 代理地址。
+- GPT-5.6 Lite：`gpt-5.6-*` 自动使用 Codex Responses Lite 上游请求形态，非流式客户端仍返回普通 JSON。
+- Lite wait 工具：每个渠道可单独开启官方 `wait` 工具注入，默认关闭。
 - 管理台：访问 `/management` 管理渠道、测试渠道、查看统计和网关状态。
 - 持久化：使用 SQLite，默认数据目录为 `data/`。
 
@@ -111,6 +113,7 @@ http://localhost:8002/management
 - 查看服务概览与 24 小时渠道统计。
 - 新增、编辑、启用、禁用、删除渠道。
 - 配置渠道上游地址、上游 API Key、下游 API Key、支持模型和 HTTP 代理。
+- 配置渠道是否为 GPT-5.6 Lite 上游请求注入官方 `wait` 工具。
 - 在渠道配置中添加自定义模型名，自定义模型只会路由到显式选择它的渠道。
 - 设置连续错误上限；留空或恢复默认时使用 `3`，达到上限后渠道进入冷却。
 - 测试单个渠道可用性。
@@ -153,6 +156,9 @@ http://localhost:8002/management
 - `/v1/models` 返回内置模型与所有渠道 `supported_models` 中声明的自定义模型，重复模型名会自动去重。
 - 渠道必须显式选择至少一个支持模型，`supported_models` 不再使用 `null` 表示“支持全部模型”。
 - 自定义模型只会路由到显式声明该模型的渠道；从所有渠道移除某个自定义模型后，该模型会从 `/v1/models` 消失。
+- `gpt-5.6-*` 模型会自动启用 Codex Responses Lite 上游转换，不需要按渠道选择，也不会影响 `gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`、`gpt-5.2` 等非 Lite 模型。
+- Lite 转换会将下游顶层 `tools` 转移到 `additional_tools.tools`，不会主动生成 `prompt_cache_key`，也不会设置 `service_tier`。
+- 渠道的 `inject_wait_tool` 只控制是否追加官方 `wait` 工具，默认关闭；如果已有同名 `wait` 工具则不会重复追加。
 - `failure_threshold` 表示渠道进入冷却前允许的连续错误次数，必须是不小于 `1` 的整数。
 - `PATCH /admin/config` 传入 `{"failure_threshold": null}` 可恢复默认值 `3`。
 

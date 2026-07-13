@@ -1296,6 +1296,11 @@
             <input id="channelProxyUrl" type="url" autocomplete="off" spellcheck="false" placeholder="http://proxy.example.com:8080">
             <div class="field-help">本渠道调用上游时使用的 HTTP/HTTPS 代理，留空表示直连。</div>
           </label>
+          <label class="checkbox-line wide">
+            <input id="channelInjectWaitTool" type="checkbox">
+            <span>为 GPT-5.6 Lite 请求注入官方 wait 工具</span>
+          </label>
+          <div class="field-help wide">默认关闭。开启后仅在本渠道上游 Lite 请求的 additional_tools 中补充 wait，不影响其他工具。</div>
           <div class="wide">
             <span class="field-label">支持的模型</span>
             <div class="model-checks" id="channelModelChecks"></div>
@@ -1451,7 +1456,7 @@
           "failureThreshold", "failureThresholdHelp", "saveFailureThreshold", "resetFailureThreshold", "stateDetails", "navOverviewCount", "navChannelCount",
           "navModelCount", "navStateCount", "channelDialog", "channelForm", "dialogTitle", "channelName",
           "channelUrl", "channelPriority", "channelEnabled", "channelUpstreamKey", "clearChannelUpstreamKey",
-          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelProxyUrl", "channelModelChecks", "channelModelName", "addChannelModel", "saveChannel",
+          "clearUpstreamKeyWrap", "channelDownstreamKey", "clearChannelKey", "clearKeyWrap", "channelProxyUrl", "channelInjectWaitTool", "channelModelChecks", "channelModelName", "addChannelModel", "saveChannel",
           "testDialog", "testForm", "testDialogTitle", "testChannelName", "testModel", "testResult", "runChannelTest"
         ]) {
           dom[id] = document.getElementById(id);
@@ -2114,6 +2119,7 @@
         dom.channelUpstreamKey.value = "";
         dom.channelDownstreamKey.value = "";
         dom.channelProxyUrl.value = channel?.proxy_url || "";
+        dom.channelInjectWaitTool.checked = Boolean(channel?.inject_wait_tool);
         dom.clearChannelUpstreamKey.checked = false;
         dom.clearChannelKey.checked = false;
         dom.clearUpstreamKeyWrap.style.display = channel ? "flex" : "none";
@@ -2275,7 +2281,8 @@
           name: dom.channelName.value.trim(),
           upstream_url: dom.channelUrl.value.trim(),
           priority: Number(dom.channelPriority.value || 0),
-          enabled: dom.channelEnabled.querySelector(".chip.active")?.dataset.value === "true"
+          enabled: dom.channelEnabled.querySelector(".chip.active")?.dataset.value === "true",
+          inject_wait_tool: dom.channelInjectWaitTool.checked
         };
         if (!body.upstream_url.startsWith("http://") && !body.upstream_url.startsWith("https://")) {
           showNotice("上游地址必须以 http:// 或 https:// 开头", "error");

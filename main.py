@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 import platform
 import random
@@ -28,7 +29,8 @@ TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 CHANNEL_TEST_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 ORIGINATOR = "codex_cli_rs"
-CODEX_VERSION = "0.139.0"
+LITE_ORIGINATOR = "codex_exec"
+CODEX_VERSION = "0.144.2"
 TERMINAL_UA = ""
 DEFAULT_FAILURE_THRESHOLD = 3
 COOLDOWN_SECONDS = 300
@@ -59,6 +61,46 @@ METADATA_HEADER_KEYS = (
 )
 
 REQUIRED_RESPONSES_INCLUDE = "reasoning.encrypted_content"
+LITE_DEFAULT_REASONING = {"effort": "medium", "context": "all_turns"}
+LITE_TEXT = {"verbosity": "medium"}
+
+CODEX_WAIT_TOOL = {
+    "type": "function",
+    "name": "wait",
+    "description": (
+        "Waits on a yielded `exec` cell and returns new output or completion.\n"
+        "- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n"
+        "- `cell_id` identifies the running `exec` cell to resume.\n"
+        "- `yield_time_ms` controls how long to wait for more output before yielding again. "
+        "Defaults to 10000 ms.\n"
+        "- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.\n"
+        "- `terminate: true` stops the running cell; false or omitted waits for output."
+    ),
+    "strict": False,
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "cell_id": {
+                "type": "string",
+                "description": "Identifier of the running exec cell.",
+            },
+            "yield_time_ms": {
+                "type": "number",
+                "description": "Wait before yielding more output. Defaults to 10000 ms.",
+            },
+            "max_tokens": {
+                "type": "number",
+                "description": "Output token budget for this wait call. Defaults to 10000 tokens.",
+            },
+            "terminate": {
+                "type": "boolean",
+                "description": "True stops the running exec cell; false or omitted waits for output.",
+            },
+        },
+        "required": ["cell_id"],
+        "additionalProperties": False,
+    },
+}
 
 RETRYABLE_STATUS_CODES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 
@@ -141,6 +183,14 @@ def _sanitize_user_agent(value: str) -> str:
 
 def _codex_user_agent() -> str:
     return f"{ORIGINATOR}/{CODEX_VERSION} (Windows 10; x86_64)"
+
+
+def _codex_exec_user_agent() -> str:
+    return f"{LITE_ORIGINATOR}/{CODEX_VERSION} (Debian 13.0.0; x86_64) tmux/3.5a ({LITE_ORIGINATOR}; {CODEX_VERSION})"
+
+
+def _is_responses_lite_model(model: Any) -> bool:
+    return isinstance(model, str) and model.startswith("gpt-5.6-")
 
 
 def _connect_db() -> sqlite3.Connection:
@@ -415,6 +465,7 @@ def _init_db() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 upstream_api_key TEXT,
                 downstream_api_key TEXT,
+                inject_wait_tool INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -455,6 +506,8 @@ def _init_db() -> None:
             conn.execute("ALTER TABLE channels ADD COLUMN supported_models TEXT")
         if "proxy_url" not in channel_columns:
             conn.execute("ALTER TABLE channels ADD COLUMN proxy_url TEXT")
+        if "inject_wait_tool" not in channel_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN inject_wait_tool INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             "UPDATE channels SET supported_models = ?, updated_at = ? WHERE supported_models IS NULL",
             (_default_supported_models_json(), _utc_now()),
@@ -466,10 +519,10 @@ def _init_db() -> None:
             now = _utc_now()
             conn.execute(
                 """
-                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, proxy_url, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, inject_wait_tool, supported_models, proxy_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, _default_supported_models_json(), None, now, now),
+                (channel_id, "default", DEFAULT_UPSTREAM_URL, 0, 1, None, None, 0, _default_supported_models_json(), None, now, now),
             )
             conn.execute(
                 """
@@ -695,6 +748,130 @@ def _upstream_responses_url(channel: dict[str, Any]) -> str:
     return f"{upstream_url}/responses"
 
 
+def _turn_id_from_metadata(turn_metadata: str | None) -> str:
+    if turn_metadata:
+        try:
+            data = json.loads(turn_metadata)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("turn_id"), str) and data["turn_id"].strip():
+            return data["turn_id"]
+    return _new_prefixed_id("turn")
+
+
+def _ensure_lite_additional_tools_item(body: dict[str, Any]) -> dict[str, Any]:
+    input_value = body.get("input")
+    input_items = copy.deepcopy(input_value) if isinstance(input_value, list) else []
+
+    additional_index: int | None = None
+    for index, item in enumerate(input_items):
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            additional_index = index
+            break
+
+    if additional_index is None:
+        additional_item: dict[str, Any] = {"type": "additional_tools", "role": "developer", "tools": []}
+        input_items.insert(0, additional_item)
+    else:
+        additional_item = input_items.pop(additional_index)
+        additional_item.setdefault("role", "developer")
+        input_items.insert(0, additional_item)
+
+    tools = additional_item.get("tools")
+    if not isinstance(tools, list):
+        tools = []
+    additional_item["tools"] = tools
+
+    top_level_tools = body.get("tools")
+    if isinstance(top_level_tools, list):
+        tools.extend(copy.deepcopy(top_level_tools))
+
+    body["input"] = input_items
+    return body
+
+
+def _tool_names(tools: list[Any]) -> set[str]:
+    return {
+        tool["name"]
+        for tool in tools
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+    }
+
+
+def _append_wait_tool_if_enabled(body: dict[str, Any], channel: dict[str, Any]) -> None:
+    if not _bool_from_db(channel.get("inject_wait_tool")):
+        return
+    input_items = body.get("input")
+    if not isinstance(input_items, list) or not input_items:
+        return
+    additional_item = input_items[0]
+    if not isinstance(additional_item, dict) or additional_item.get("type") != "additional_tools":
+        return
+    tools = additional_item.get("tools")
+    if not isinstance(tools, list):
+        tools = []
+        additional_item["tools"] = tools
+    if "wait" not in _tool_names(tools):
+        tools.append(copy.deepcopy(CODEX_WAIT_TOOL))
+
+
+def _body_for_upstream_channel(
+    body: dict[str, Any],
+    channel: dict[str, Any],
+    state: dict[str, Any] | None = None,
+    turn_metadata: str | None = None,
+) -> dict[str, Any]:
+    if not _is_responses_lite_model(body.get("model")):
+        return body
+
+    if state is None:
+        state = _get_gateway_state()
+
+    upstream_body = copy.deepcopy(body)
+    upstream_body = _ensure_input_array(upstream_body)
+    upstream_body = _ensure_lite_additional_tools_item(upstream_body)
+    _append_wait_tool_if_enabled(upstream_body, channel)
+
+    upstream_body.pop("instructions", None)
+    upstream_body.pop("tools", None)
+    upstream_body.pop("max_output_tokens", None)
+    upstream_body.pop("service_tier", None)
+    upstream_body["stream"] = True
+    upstream_body["store"] = False
+    upstream_body["tool_choice"] = "auto"
+    upstream_body["parallel_tool_calls"] = False
+    upstream_body["include"] = [REQUIRED_RESPONSES_INCLUDE]
+    upstream_body["text"] = copy.deepcopy(LITE_TEXT)
+    if upstream_body.get("reasoning") is None:
+        upstream_body["reasoning"] = copy.deepcopy(LITE_DEFAULT_REASONING)
+
+    metadata = upstream_body.get("client_metadata")
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        raise GatewayError(
+            "client_metadata must be a JSON object",
+            status_code=400,
+            code="invalid_client_metadata",
+            param="client_metadata",
+        )
+    metadata = dict(metadata)
+    metadata.setdefault("session_id", state["session_id"])
+    metadata.setdefault("thread_id", state["thread_id"])
+    metadata.setdefault("turn_id", _turn_id_from_metadata(turn_metadata))
+    metadata.setdefault("x-codex-installation-id", state["installation_id"])
+    metadata.setdefault("x-codex-window-id", _window_id(state))
+    if turn_metadata:
+        metadata.setdefault("x-codex-turn-metadata", turn_metadata)
+    upstream_body["client_metadata"] = metadata
+
+    return upstream_body
+
+
+def _bool_from_db(value: Any) -> bool:
+    return bool(int(value or 0))
+
+
 def _client_for_channel(request: Request, channel: dict[str, Any]) -> httpx.AsyncClient:
     """返回用于该渠道的 HTTP 客户端。
 
@@ -716,18 +893,29 @@ def _client_for_channel(request: Request, channel: dict[str, Any]) -> httpx.Asyn
     return client
 
 
-def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, Any]) -> dict[str, str]:
-    turn_metadata = json.dumps({
+def _codex_turn_metadata(state: dict[str, Any], turn_id: str) -> str:
+    return json.dumps({
         "session_id": state["session_id"],
         "thread_id": state["thread_id"],
         "thread_source": "user",
-        "turn_id": _new_prefixed_id("turn"),
+        "turn_id": turn_id,
         "workspaces": {},
         "sandbox": "seccomp",
         "turn_started_at_unix_ms": int(_now_ts() * 1000),
         "request_kind": "turn",
         "window_id": _window_id(state),
     })
+
+
+def _codex_headers(
+    request: Request,
+    state: dict[str, Any],
+    channel: dict[str, Any],
+    model: Any = None,
+    turn_metadata: str | None = None,
+) -> dict[str, str]:
+    if turn_metadata is None:
+        turn_metadata = _codex_turn_metadata(state, _new_prefixed_id("turn"))
 
     headers = {
         "Content-Type": "application/json",
@@ -746,6 +934,17 @@ def _codex_headers(request: Request, state: dict[str, Any], channel: dict[str, A
         "thread_id": state["thread_id"],
         "x-client-request-id": state["thread_id"],
     }
+
+    if _is_responses_lite_model(model):
+        headers.update(
+            {
+                "User-Agent": _codex_exec_user_agent(),
+                "originator": LITE_ORIGINATOR,
+                "x-codex-beta-features": "remote_compaction_v2",
+                "x-openai-internal-codex-responses-lite": "true",
+            }
+        )
+        headers.pop("version", None)
 
     for name in PASSTHROUGH_REQUEST_HEADERS:
         value = request.headers.get(name)
@@ -822,6 +1021,10 @@ def _ensure_responses_include(body: dict[str, Any]) -> dict[str, Any]:
     if REQUIRED_RESPONSES_INCLUDE not in include:
         include.append(REQUIRED_RESPONSES_INCLUDE)
     body["include"] = include
+    return body
+
+
+def _ensure_codex_request_shape(body: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
@@ -910,7 +1113,7 @@ def _select_channels(request: Request, model: str | None = None) -> tuple[list[d
             """
             SELECT
                 c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models,
-                c.proxy_url, c.created_at, c.updated_at,
+                c.proxy_url, c.inject_wait_tool, c.created_at, c.updated_at,
                 COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
                 r.cooldown_until, r.last_success_at, r.last_failure_at
             FROM channels c
@@ -1024,6 +1227,7 @@ def _public_channel(
         "enabled": bool(channel["enabled"]),
         "has_upstream_api_key": bool(channel.get("upstream_api_key")),
         "has_downstream_api_key": bool(channel.get("downstream_api_key")),
+        "inject_wait_tool": _bool_from_db(channel.get("inject_wait_tool")),
         "supported_models": parsed_models,
         "proxy_url": channel.get("proxy_url"),
         "consecutive_failures": consecutive_failures,
@@ -1044,7 +1248,7 @@ def _get_channel_row(conn: sqlite3.Connection, channel_id: str) -> sqlite3.Row:
     row = conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models, c.proxy_url,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.inject_wait_tool, c.supported_models, c.proxy_url,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -1063,7 +1267,7 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT
-            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.supported_models, c.proxy_url,
+            c.id, c.name, c.upstream_url, c.priority, c.enabled, c.upstream_api_key, c.downstream_api_key, c.inject_wait_tool, c.supported_models, c.proxy_url,
             c.created_at, c.updated_at,
             COALESCE(r.consecutive_failures, 0) AS consecutive_failures,
             r.cooldown_until, r.last_success_at, r.last_failure_at
@@ -1075,7 +1279,17 @@ def _list_channel_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, Any]:
-    allowed = {"name", "upstream_url", "priority", "enabled", "upstream_api_key", "downstream_api_key", "supported_models", "proxy_url"}
+    allowed = {
+        "name",
+        "upstream_url",
+        "priority",
+        "enabled",
+        "upstream_api_key",
+        "downstream_api_key",
+        "inject_wait_tool",
+        "supported_models",
+        "proxy_url",
+    }
     unknown = sorted(set(body) - allowed)
     if unknown:
         raise GatewayError(f"Unknown channel fields: {', '.join(unknown)}", 400, "unknown_channel_fields")
@@ -1112,6 +1326,13 @@ def _validate_channel_payload(body: dict[str, Any], partial: bool) -> dict[str, 
         values["enabled"] = 1 if body["enabled"] else 0
     elif not partial:
         values["enabled"] = 1
+
+    if "inject_wait_tool" in body:
+        if not isinstance(body["inject_wait_tool"], bool):
+            raise GatewayError("Channel inject_wait_tool must be a boolean", 400, "invalid_inject_wait_tool", param="inject_wait_tool")
+        values["inject_wait_tool"] = 1 if body["inject_wait_tool"] else 0
+    elif not partial:
+        values["inject_wait_tool"] = 0
 
     if "upstream_api_key" in body:
         key = body["upstream_api_key"]
@@ -1241,10 +1462,11 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
     last_error_message = "All channels failed"
     missing_key_error: GatewayError | None = None
     failed_attempts = 0
+    turn_metadata = _codex_turn_metadata(state, _new_prefixed_id("turn"))
 
     for channel in channels:
         try:
-            headers = _codex_headers(request, state, channel)
+            headers = _codex_headers(request, state, channel, body.get("model"), turn_metadata)
         except GatewayError as exc:
             if exc.code == "missing_upstream_api_key":
                 missing_key_error = exc
@@ -1253,7 +1475,11 @@ async def _post_upstream_with_failover(request: Request, body: dict[str, Any]) -
         client = _client_for_channel(request, channel)
         started_at = time.perf_counter()
         try:
-            response = await client.post(_upstream_responses_url(channel), headers=headers, json=body)
+            response = await client.post(
+                _upstream_responses_url(channel),
+                headers=headers,
+                json=_body_for_upstream_channel(body, channel, state, turn_metadata),
+            )
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
@@ -1322,10 +1548,11 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
     last_error_message = "All channels failed"
     missing_key_error: GatewayError | None = None
     failed_attempts = 0
+    turn_metadata = _codex_turn_metadata(state, _new_prefixed_id("turn"))
 
     for channel in channels:
         try:
-            headers = _codex_headers(request, state, channel)
+            headers = _codex_headers(request, state, channel, body.get("model"), turn_metadata)
         except GatewayError as exc:
             if exc.code == "missing_upstream_api_key":
                 missing_key_error = exc
@@ -1334,7 +1561,12 @@ async def _open_stream_with_failover(request: Request, body: dict[str, Any]) -> 
         client = _client_for_channel(request, channel)
         started_at = time.perf_counter()
         try:
-            stream_context, response = await _open_upstream_stream(client, channel, headers, body)
+            stream_context, response = await _open_upstream_stream(
+                client,
+                channel,
+                headers,
+                _body_for_upstream_channel(body, channel, state, turn_metadata),
+            )
         except httpx.TimeoutException:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             _record_channel_result(channel["id"], False, None, "upstream_timeout", latency_ms, True, is_global_key)
@@ -1401,6 +1633,124 @@ async def _raw_sse_bytes(result: StreamResult) -> AsyncIterator[bytes]:
         await _close_upstream_stream(result.stream_context)
 
 
+def _sse_events_from_bytes(body: bytes) -> list[tuple[str | None, str]]:
+    text = body.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    events: list[tuple[str | None, str]] = []
+    for block in text.split("\n\n"):
+        event_type: str | None = None
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_type = line.removeprefix("event:").strip()
+                continue
+            if line.startswith("data:"):
+                data = line.removeprefix("data:")
+                if data.startswith(" "):
+                    data = data[1:]
+                data_lines.append(data)
+        if data_lines:
+            events.append((event_type, "\n".join(data_lines)))
+    return events
+
+
+def _response_json_from_sse(body: bytes, model: Any) -> dict[str, Any] | None:
+    completed_response: dict[str, Any] | None = None
+    latest_response: dict[str, Any] | None = None
+    output_text_parts: list[str] = []
+    done_output_text: str | None = None
+    response_id: str | None = None
+
+    for event_type, data_text in _sse_events_from_bytes(body):
+        if data_text == "[DONE]":
+            continue
+        try:
+            event_data = json.loads(data_text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event_data, dict):
+            continue
+        event_name = event_type or event_data.get("type")
+
+        response = event_data.get("response")
+        if isinstance(response, dict):
+            latest_response = response
+            if event_name in {"response.completed", "response.incomplete", "response.failed"}:
+                completed_response = response
+        elif event_data.get("object") == "response" or "output" in event_data:
+            latest_response = event_data
+
+        if isinstance(event_data.get("response_id"), str):
+            response_id = event_data["response_id"]
+        if isinstance(event_data.get("item_id"), str) and response_id is None:
+            response_id = event_data["item_id"]
+
+        delta = event_data.get("delta")
+        if event_name == "response.output_text.delta" and isinstance(delta, str):
+            output_text_parts.append(delta)
+        text = event_data.get("text")
+        if event_name == "response.output_text.done" and isinstance(text, str):
+            done_output_text = text
+
+    if completed_response is not None:
+        return completed_response
+    if latest_response is not None:
+        return latest_response
+
+    output_text = done_output_text if done_output_text is not None else "".join(output_text_parts)
+    if not output_text:
+        return None
+    return {
+        "id": response_id or _new_prefixed_id("resp"),
+        "object": "response",
+        "created_at": int(_now_ts()),
+        "status": "completed",
+        "model": model,
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": output_text}],
+            }
+        ],
+        "output_text": output_text,
+    }
+
+
+async def _json_response_from_stream_result(result: StreamResult, model: Any) -> Response:
+    success = False
+    try:
+        body = await result.response.aread()
+        success = True
+    except Exception:
+        latency_ms = int((time.perf_counter() - result.started_at) * 1000)
+        _record_channel_result(result.channel["id"], False, result.response.status_code, "stream_error", latency_ms, True, result.is_global_key)
+        raise
+    finally:
+        if success:
+            latency_ms = int((time.perf_counter() - result.started_at) * 1000)
+            _record_channel_result(result.channel["id"], True, result.response.status_code, None, latency_ms, False, result.is_global_key)
+        await _close_upstream_stream(result.stream_context)
+
+    headers = _merge_headers(
+        _trace_headers(result.response),
+        _channel_response_headers(result.channel, result.failover_count),
+    )
+    content_type = result.response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        try:
+            content = json.loads(body)
+        except json.JSONDecodeError:
+            return _error_response("Upstream returned invalid JSON", 502, "upstream_invalid_json", headers=headers)
+        return JSONResponse(content=content, status_code=result.response.status_code, headers=headers)
+
+    content = _response_json_from_sse(body, model)
+    if content is None:
+        return _error_response("Upstream returned an invalid SSE response", 502, "upstream_invalid_sse", headers=headers)
+    return JSONResponse(content=content, status_code=result.response.status_code, headers=headers)
+
+
 def _content_value_has_text(value: Any) -> bool:
     if value is None:
         return False
@@ -1452,8 +1802,10 @@ async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
     body = _ensure_input_array(body)
     body = _ensure_client_metadata(request, body, state)
     body = _ensure_responses_include(body)
+    body = _ensure_codex_request_shape(body, state)
 
-    if body.get("stream") is True:
+    downstream_stream = body.get("stream") is True
+    if downstream_stream:
         stream_result = await _open_stream_with_failover(request, body)
         if isinstance(stream_result, JSONResponse):
             return stream_result
@@ -1468,6 +1820,12 @@ async def _post_responses(request: Request, body: dict[str, Any]) -> Response:
                 **_channel_response_headers(stream_result.channel, stream_result.failover_count),
             },
         )
+
+    if _is_responses_lite_model(body.get("model")):
+        stream_result = await _open_stream_with_failover(request, body)
+        if isinstance(stream_result, JSONResponse):
+            return stream_result
+        return await _json_response_from_stream_result(stream_result, body.get("model"))
 
     upstream = await _post_upstream_with_failover(request, body)
     return _json_response_from_upstream(
@@ -1587,8 +1945,8 @@ async def create_channel(request: Request):
     with _connect_db() as conn:
         conn.execute(
             """
-            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, supported_models, proxy_url, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels(id, name, upstream_url, priority, enabled, upstream_api_key, downstream_api_key, inject_wait_tool, supported_models, proxy_url, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
@@ -1598,6 +1956,7 @@ async def create_channel(request: Request):
                 values["enabled"],
                 values["upstream_api_key"],
                 values["downstream_api_key"],
+                values["inject_wait_tool"],
                 values["supported_models"],
                 values["proxy_url"],
                 now,
@@ -1722,15 +2081,17 @@ async def test_channel(request: Request, channel_id: str):
     started_at = time.perf_counter()
     try:
         state = _get_gateway_state()
-        headers = _codex_headers(request, state, channel)
+        turn_metadata = _codex_turn_metadata(state, _new_prefixed_id("turn"))
+        headers = _codex_headers(request, state, channel, model, turn_metadata)
         test_body = {"model": model, "input": "ping", "max_output_tokens": 1024}
         test_body = _ensure_input_array(test_body)
         test_body = _ensure_client_metadata(request, test_body, state)
         test_body = _ensure_responses_include(test_body)
+        test_body = _ensure_codex_request_shape(test_body, state)
         response = await _client_for_channel(request, channel).post(
             _upstream_responses_url(channel),
             headers=headers,
-            json=test_body,
+            json=_body_for_upstream_channel(test_body, channel, state, turn_metadata),
             timeout=CHANNEL_TEST_TIMEOUT,
         )
         result["latency_ms"] = int((time.perf_counter() - started_at) * 1000)
@@ -1742,11 +2103,18 @@ async def test_channel(request: Request, channel_id: str):
         if not response.content:
             result["message"] = "上游返回空响应"
             return result
-        try:
-            data = response.json()
-        except json.JSONDecodeError:
-            result["message"] = "上游返回非 JSON 响应"
-            return result
+        content_type = response.headers.get("content-type", "")
+        if "text/event-stream" in content_type.lower():
+            data = _response_json_from_sse(response.content, model)
+            if data is None:
+                result["message"] = "上游返回无效 SSE 响应"
+                return result
+        else:
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                result["message"] = "上游返回非 JSON 响应"
+                return result
         if not _test_response_has_content(data):
             result["message"] = "上游返回空内容"
             return result
