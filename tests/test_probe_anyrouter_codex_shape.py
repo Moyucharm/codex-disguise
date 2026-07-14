@@ -60,6 +60,10 @@ class AnyRouterProbeShapeTests(unittest.TestCase):
         self.assertEqual(headers["originator"], "codex_exec")
         self.assertNotIn("version", headers)
         self.assertIn("x-codex-turn-metadata", headers)
+        self.assertNotIn("session_id", headers)
+        self.assertNotIn("session-id", headers)
+        self.assertNotIn("session_id", body["client_metadata"])
+        self.assertNotIn("session_id", json.loads(headers["x-codex-turn-metadata"]))
 
     def test_gateway_variants_only_add_or_authorized_override_fields(self):
         baseline_body = probe.gateway_baseline_body("gpt-5.6-sol", "1 + 2 equals 3, right?")

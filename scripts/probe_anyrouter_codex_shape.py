@@ -157,7 +157,6 @@ def gateway_turn_id() -> str:
 def gateway_turn_metadata() -> str:
     gateway_state = state()
     return json.dumps({
-        "session_id": gateway_state["session_id"],
         "thread_id": gateway_state["thread_id"],
         "thread_source": "user",
         "turn_id": gateway_turn_id(),

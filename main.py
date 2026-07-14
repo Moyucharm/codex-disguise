@@ -294,7 +294,6 @@ def _read_legacy_state() -> dict[str, Any]:
 def _new_gateway_state() -> dict[str, Any]:
     return {
         "installation_id": str(uuid.uuid4()),
-        "session_id": _new_prefixed_id("sess"),
         "thread_id": _new_prefixed_id("thread"),
         "window_generation": 0,
         "created_at": _utc_now(),
@@ -305,7 +304,6 @@ def _state_from_rows(rows: list[sqlite3.Row]) -> dict[str, Any]:
     raw = {row["key"]: row["value"] for row in rows}
     return {
         "installation_id": raw["installation_id"],
-        "session_id": raw["session_id"],
         "thread_id": raw["thread_id"],
         "window_generation": int(raw.get("window_generation") or 0),
         "created_at": raw["created_at"],
@@ -346,18 +344,19 @@ def _ensure_gateway_state(conn: sqlite3.Connection) -> None:
 
     state = {
         "installation_id": existing.get("installation_id") or legacy.get("installation_id") or defaults["installation_id"],
-        "session_id": existing.get("session_id") or legacy.get("session_id") or defaults["session_id"],
         "thread_id": existing.get("thread_id") or legacy.get("thread_id") or defaults["thread_id"],
         "window_generation": existing.get("window_generation") or legacy.get("window_generation") or 0,
         "created_at": existing.get("created_at") or legacy.get("created_at") or defaults["created_at"],
     }
     _upsert_gateway_state(conn, state)
+    conn.execute("DELETE FROM gateway_state WHERE key = 'session_id'")
 
 
 def _reset_gateway_state() -> dict[str, Any]:
     with _connect_db() as conn:
         state = _new_gateway_state()
         _upsert_gateway_state(conn, state)
+        conn.execute("DELETE FROM gateway_state WHERE key = 'session_id'")
         conn.commit()
         return _get_gateway_state(conn)
 
@@ -761,7 +760,6 @@ def _window_id(state: dict[str, Any]) -> str:
 def _public_state(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "installation_id": state["installation_id"],
-        "session_id": state["session_id"],
         "thread_id": state["thread_id"],
         "window_generation": state["window_generation"],
         "window_id": _window_id(state),
@@ -1051,7 +1049,6 @@ def _body_for_upstream_channel(
             param="client_metadata",
         )
     metadata = dict(metadata)
-    metadata.setdefault("session_id", state["session_id"])
     metadata.setdefault("thread_id", state["thread_id"])
     metadata.setdefault("turn_id", _turn_id_from_metadata(turn_metadata))
     metadata.setdefault("x-codex-installation-id", state["installation_id"])
@@ -1090,7 +1087,6 @@ def _client_for_channel(request: Request, channel: dict[str, Any]) -> httpx.Asyn
 
 def _codex_turn_metadata(state: dict[str, Any], turn_id: str) -> str:
     return json.dumps({
-        "session_id": state["session_id"],
         "thread_id": state["thread_id"],
         "thread_source": "user",
         "turn_id": turn_id,
@@ -1123,8 +1119,6 @@ def _codex_headers(
         "x-codex-installation-id": state["installation_id"],
         "x-codex-window-id": _window_id(state),
         "x-codex-turn-metadata": turn_metadata,
-        "session-id": state["session_id"],
-        "session_id": state["session_id"],
         "thread-id": state["thread_id"],
         "thread_id": state["thread_id"],
         "x-client-request-id": state["thread_id"],

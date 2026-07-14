@@ -13,7 +13,6 @@ class FakeRequest:
 def gateway_state() -> dict[str, object]:
     return {
         "installation_id": "install_123",
-        "session_id": "sess_123",
         "thread_id": "thread_123",
         "window_generation": 0,
         "created_at": "2026-01-01T00:00:00Z",
@@ -94,13 +93,26 @@ class CodexRequestShapeTests(unittest.TestCase):
         self.assertEqual([tool["name"] for tool in shaped["input"][0]["tools"]], ["client_tool"])
         self.assertEqual(shaped["input"][1]["type"], "message")
         self.assertEqual(shaped["client_metadata"]["existing"], "value")
-        self.assertEqual(shaped["client_metadata"]["session_id"], "sess_123")
+        self.assertNotIn("session_id", shaped["client_metadata"])
         self.assertEqual(shaped["client_metadata"]["thread_id"], "thread_123")
         self.assertEqual(shaped["client_metadata"]["turn_id"], "turn_123")
         self.assertEqual(shaped["client_metadata"]["x-codex-installation-id"], "install_123")
         self.assertEqual(shaped["client_metadata"]["x-codex-window-id"], "thread_123:0")
         self.assertEqual(shaped["client_metadata"]["x-codex-turn-metadata"], turn_metadata)
+        self.assertNotIn("session_id", json.loads(turn_metadata))
         self.assertIn("tools", body)
+
+    def test_lite_upstream_body_passthrough_client_session_id(self):
+        state = gateway_state()
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": "ping",
+            "client_metadata": {"session_id": "sess_client_owned"},
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        self.assertEqual(shaped["client_metadata"]["session_id"], "sess_client_owned")
 
     def test_lite_upstream_body_defaults_reasoning_and_reuses_additional_tools(self):
         state = gateway_state()
@@ -197,10 +209,20 @@ class CodexRequestShapeTests(unittest.TestCase):
         self.assertEqual(lite_headers["x-openai-internal-codex-responses-lite"], "true")
         self.assertNotIn("version", lite_headers)
         self.assertEqual(lite_headers["x-codex-turn-metadata"], turn_metadata)
+        self.assertNotIn("session_id", lite_headers)
+        self.assertNotIn("session-id", lite_headers)
+        self.assertNotIn("session_id", non_lite_headers)
+        self.assertNotIn("session-id", non_lite_headers)
 
         self.assertEqual(non_lite_headers["originator"], "codex_cli_rs")
         self.assertEqual(non_lite_headers["version"], "0.144.2")
         self.assertNotIn("x-openai-internal-codex-responses-lite", non_lite_headers)
+
+    def test_codex_turn_metadata_omits_session_id(self):
+        turn_metadata = json.loads(main._codex_turn_metadata(gateway_state(), "turn_123"))
+        self.assertNotIn("session_id", turn_metadata)
+        self.assertEqual(turn_metadata["thread_id"], "thread_123")
+        self.assertEqual(turn_metadata["turn_id"], "turn_123")
 
     def test_sse_output_text_events_can_be_aggregated_to_response_json(self):
         body = b"".join([
