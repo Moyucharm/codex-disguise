@@ -948,6 +948,31 @@ def _turn_id_from_metadata(turn_metadata: str | None) -> str:
     return _new_prefixed_id("turn")
 
 
+def _move_lite_instructions_to_input(body: dict[str, Any]) -> dict[str, Any]:
+    """将 Lite 请求顶层 instructions 迁移为 input 前部的 system 消息。
+
+    Lite 上游约定不接受顶层 instructions；下游系统指令以 Responses Message
+    schema（role=system, content input_text）原样插入当前 input 首项之前。
+    缺失、None、空串或非字符串不生成消息；文本不做 strip/拼接/去重。
+    """
+    instructions = body.pop("instructions", None)
+    if not isinstance(instructions, str) or len(instructions) == 0:
+        return body
+
+    input_value = body.get("input")
+    input_items = input_value if isinstance(input_value, list) else []
+    input_items.insert(
+        0,
+        {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": instructions}],
+        },
+    )
+    body["input"] = input_items
+    return body
+
+
 def _ensure_lite_additional_tools_item(body: dict[str, Any]) -> dict[str, Any]:
     input_value = body.get("input")
     input_items = copy.deepcopy(input_value) if isinstance(input_value, list) else []
@@ -1018,10 +1043,10 @@ def _body_for_upstream_channel(
 
     upstream_body = copy.deepcopy(body)
     upstream_body = _ensure_input_array(upstream_body)
+    upstream_body = _move_lite_instructions_to_input(upstream_body)
     upstream_body = _ensure_lite_additional_tools_item(upstream_body)
     _append_wait_tool_if_enabled(upstream_body, channel)
 
-    upstream_body.pop("instructions", None)
     upstream_body.pop("tools", None)
     upstream_body.pop("max_output_tokens", None)
     upstream_body.pop("service_tier", None)

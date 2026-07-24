@@ -91,7 +91,23 @@ class CodexRequestShapeTests(unittest.TestCase):
         self.assertEqual(shaped["prompt_cache_key"], "client-owned-cache-key")
         self.assertEqual(shaped["input"][0]["type"], "additional_tools")
         self.assertEqual([tool["name"] for tool in shaped["input"][0]["tools"]], ["client_tool"])
-        self.assertEqual(shaped["input"][1]["type"], "message")
+        self.assertEqual(
+            shaped["input"][1],
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "client instructions"}],
+            },
+        )
+        self.assertEqual(
+            shaped["input"][2],
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "ping"}],
+            },
+        )
+        self.assertEqual(len(shaped["input"]), 3)
         self.assertEqual(shaped["client_metadata"]["existing"], "value")
         self.assertNotIn("session_id", shaped["client_metadata"])
         self.assertEqual(shaped["client_metadata"]["thread_id"], "thread_123")
@@ -101,6 +117,132 @@ class CodexRequestShapeTests(unittest.TestCase):
         self.assertEqual(shaped["client_metadata"]["x-codex-turn-metadata"], turn_metadata)
         self.assertNotIn("session_id", json.loads(turn_metadata))
         self.assertIn("tools", body)
+        self.assertEqual(body["instructions"], "client instructions")
+
+    def test_lite_invalid_instructions_do_not_create_system_message(self):
+        state = gateway_state()
+        user_message = {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "ping"}],
+        }
+
+        for case_name, instructions, present in (
+            ("missing", None, False),
+            ("none", None, True),
+            ("empty", "", True),
+            ("non_string", 123, True),
+        ):
+            with self.subTest(case_name):
+                body: dict[str, object] = {
+                    "model": "gpt-5.6-sol",
+                    "input": [user_message],
+                }
+                if present:
+                    body["instructions"] = instructions
+
+                shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+                self.assertNotIn("instructions", shaped)
+                self.assertEqual(shaped["input"][0]["type"], "additional_tools")
+                self.assertEqual(shaped["input"][1], user_message)
+                self.assertEqual(len(shaped["input"]), 2)
+                for item in shaped["input"]:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        self.assertNotEqual(item.get("role"), "system")
+
+    def test_lite_preserves_existing_system_and_developer_messages(self):
+        state = gateway_state()
+        system_message = {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": "existing system"}],
+        }
+        developer_message = {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "existing developer"}],
+        }
+        user_message = {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "ping"}],
+        }
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": [system_message, developer_message, user_message],
+            "instructions": "migrated instructions",
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        self.assertNotIn("instructions", shaped)
+        self.assertEqual(shaped["input"][0]["type"], "additional_tools")
+        self.assertEqual(
+            shaped["input"][1],
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "migrated instructions"}],
+            },
+        )
+        self.assertEqual(shaped["input"][2], system_message)
+        self.assertEqual(shaped["input"][3], developer_message)
+        self.assertEqual(shaped["input"][4], user_message)
+        self.assertEqual(body["instructions"], "migrated instructions")
+
+    def test_lite_instructions_without_input_creates_system_message(self):
+        state = gateway_state()
+        body = {
+            "model": "gpt-5.6-sol",
+            "instructions": "only instructions",
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        self.assertNotIn("instructions", shaped)
+        self.assertEqual(shaped["input"][0]["type"], "additional_tools")
+        self.assertEqual(
+            shaped["input"][1],
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "only instructions"}],
+            },
+        )
+        self.assertEqual(len(shaped["input"]), 2)
+        self.assertEqual(body["instructions"], "only instructions")
+
+    def test_lite_string_input_follows_migrated_system_message(self):
+        state = gateway_state()
+        body = {
+            "model": "gpt-5.6-sol",
+            "input": "ping",
+            "instructions": "client instructions",
+        }
+
+        shaped = main._body_for_upstream_channel(body, {"inject_wait_tool": 0}, state, None)
+
+        self.assertNotIn("instructions", shaped)
+        self.assertEqual(shaped["input"][0]["type"], "additional_tools")
+        self.assertEqual(
+            shaped["input"][1],
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "client instructions"}],
+            },
+        )
+        self.assertEqual(
+            shaped["input"][2],
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "ping"}],
+            },
+        )
+        self.assertEqual(len(shaped["input"]), 3)
+        self.assertEqual(body["instructions"], "client instructions")
 
     def test_lite_upstream_body_passthrough_client_session_id(self):
         state = gateway_state()
